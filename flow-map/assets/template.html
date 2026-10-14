@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flow map: __TITLE__</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1f2328; --muted: #656d76; --border: #d0d7de; --panel: #f6f8fa;
+    --check: #fff3bf; --check-b: #e6a700; --error: #ffd8d8; --error-b: #d1242f;
+    --exit: #d3f9d8; --exit-b: #1a7f37; --ext: #eaeef2; --ext-b: #8c959f;
+    --io: #d0ebff; --io-b: #0969da; --loop: #f3d9fa; --loop-b: #8250df; --warn: #9a6700;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0d1117; --fg: #e6edf3; --muted: #8d96a0; --border: #30363d; --panel: #161b22; --warn: #d29922;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1400px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 40px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 15px; margin: 24px 0 8px; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+  .meta { color: var(--muted); }
+  .meta code { color: var(--fg); }
+  nav { margin: 12px 0; display: flex; flex-wrap: wrap; gap: 6px 14px; }
+  nav a { color: var(--io-b); text-decoration: none; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+          border: 1.5px solid; font-size: 12.5px; color: #1f2328; }
+  .chip.check { background: var(--check); border-color: var(--check-b); }
+  .chip.error { background: var(--error); border-color: var(--error-b); }
+  .chip.exit { background: var(--exit); border-color: var(--exit-b); }
+  .chip.ext { background: var(--ext); border-color: var(--ext-b); }
+  .chip.io { background: var(--io); border-color: var(--io-b); }
+  .chip.loop { background: var(--loop); border-color: var(--loop-b); }
+  .chip.fn { background: #fff; border-color: #57606a; border-style: double; border-width: 3px; }
+  .chip.unres { background: transparent; border-style: dashed; border-color: var(--muted); color: var(--fg); }
+  .diagram { position: relative; border: 1px solid var(--border); border-radius: 8px; background: #fff;
+             height: 70vh; min-height: 360px; overflow: hidden; }
+  .diagram svg { width: 100% !important; height: 100% !important; max-width: none !important; }
+  .diagram .nodeLabel b { display: inline-block; font-size: 13.5px; font-weight: 600; margin-bottom: 2px; }
+  .diagram .nodeLabel code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px;
+                             background: rgba(255,255,255,.6); padding: 0 3px; border-radius: 3px; color: #24292f; }
+  .diagram .nodeLabel small { font-size: 10.5px; color: #57606a; }
+  .diagram .edgeLabel { font-size: 11.5px; color: #424a53; }
+  .diagram .cluster rect { fill: #f6f8fa !important; stroke: #d0d7de !important; }
+  .diagram .cluster .nodeLabel, .diagram .cluster-label { font-weight: 600; }
+  .toolbar { position: absolute; top: 8px; right: 8px; z-index: 2; display: flex; gap: 4px; }
+  .toolbar button { border: 1px solid #d0d7de; background: #fff; color: #1f2328; border-radius: 6px;
+                    padding: 2px 9px; cursor: pointer; font-size: 13px; }
+  .render-error { padding: 16px; color: #d1242f; white-space: pre-wrap; overflow: auto; height: 100%; background: #fff; }
+  .render-error pre { color: #1f2328; background: #f6f8fa; padding: 8px; overflow: auto; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; min-width: 760px; }
+  th, td { text-align: left; vertical-align: top; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  th { background: var(--panel); font-weight: 600; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  .yes { color: var(--exit-b); } .no { color: var(--error-b); } .indirect { color: var(--warn); }
+  ul.notes { padding-left: 20px; }
+  ul.notes li { margin: 6px 0; }
+  .tag { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--panel);
+         border: 1px solid var(--border); color: var(--muted); margin-right: 4px; }
+  .empty { color: var(--muted); font-style: italic; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Flow map: <code>__TITLE__</code></h1>
+  <div class="meta">__META__</div>
+  <nav>
+    <a href="#diagrams">Diagrams</a><a href="#checks">Checks</a>
+    <a href="#unresolved">Unresolved</a><a href="#external">External calls</a><a href="#review">Review notes</a>
+  </nav>
+
+  <div class="legend">
+    <span class="chip check">◆ check</span>
+    <span class="chip error">error / raise</span>
+    <span class="chip exit">return / exit</span>
+    <span class="chip ext">external library</span>
+    <span class="chip io">▱ data in / out</span>
+    <span class="chip loop">⬡ loop</span>
+    <span class="chip fn">collapsed function (click)</span>
+    <span class="chip unres">┄ unresolved call</span>
+  </div>
+
+  <h2 id="diagrams">Diagrams</h2>
+  <!-- One <section> per diagram. The Mermaid source goes inside the <script type="text/plain">
+       block verbatim (no HTML escaping). Style classes (check, error, exit, ext, io, loop, fn,
+       unres) are injected automatically, do not add classDef lines. -->
+__DIAGRAMS__
+
+  <h2 id="checks">Checks</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>#</th><th>Check</th><th>Kind</th><th>Location</th><th>If true →</th><th>If false →</th><th>Tested? <span class="meta">(__TEST_METHOD__)</span></th></tr></thead>
+    <tbody>
+__CHECK_ROWS__
+    </tbody>
+  </table>
+  </div>
+
+  <h2 id="unresolved">Unresolved calls</h2>
+__UNRESOLVED__
+
+  <h2 id="external">External calls</h2>
+__EXTERNAL__
+
+  <h2 id="review">Review notes</h2>
+__REVIEW_NOTES__
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<script>
+(function () {
+  var CLASSDEFS = [
+    "classDef check fill:#fff3bf,stroke:#e6a700,stroke-width:1.5px,color:#1f2328",
+    "classDef error fill:#ffd8d8,stroke:#d1242f,stroke-width:1.5px,color:#1f2328",
+    "classDef exit fill:#d3f9d8,stroke:#1a7f37,stroke-width:1.5px,color:#1f2328",
+    "classDef ext fill:#eaeef2,stroke:#8c959f,stroke-width:1px,color:#1f2328",
+    "classDef io fill:#d0ebff,stroke:#0969da,stroke-width:1.5px,color:#1f2328",
+    "classDef loop fill:#f3d9fa,stroke:#8250df,stroke-width:1.5px,color:#1f2328",
+    "classDef fn fill:#ffffff,stroke:#57606a,stroke-width:3px,color:#1f2328",
+    "classDef unres fill:#ffffff,stroke:#8c959f,stroke-dasharray:5 4,color:#1f2328"
+  ].join("\n");
+
+  function showError(box, err, src) {
+    box.innerHTML = "";
+    var div = document.createElement("div");
+    div.className = "render-error";
+    div.textContent = "Mermaid could not render this diagram:\n" + (err && err.message ? err.message : err) + "\n\nSource:";
+    var pre = document.createElement("pre");
+    pre.textContent = src;
+    div.appendChild(pre);
+    box.appendChild(div);
+  }
+
+  function addToolbar(box, pz) {
+    var bar = document.createElement("div");
+    bar.className = "toolbar";
+    [["+", function () { pz.zoomIn(); }], ["−", function () { pz.zoomOut(); }],
+     ["Fit", function () { pz.resize(); pz.fit(); pz.center(); }]].forEach(function (b) {
+      var btn = document.createElement("button");
+      btn.textContent = b[0];
+      btn.onclick = b[1];
+      bar.appendChild(btn);
+    });
+    box.appendChild(bar);
+  }
+
+  if (!window.mermaid) {
+    document.querySelectorAll(".diagram").forEach(function (box) {
+      showError(box, "Mermaid failed to load from the CDN (offline?).", box.querySelector("script").textContent);
+    });
+    return;
+  }
+  mermaid.initialize({ startOnLoad: false, securityLevel: "antiscript", theme: "default",
+                       flowchart: { htmlLabels: true, curve: "basis", useMaxWidth: false }, maxTextSize: 200000 });
+
+  var boxes = Array.prototype.slice.call(document.querySelectorAll(".diagram"));
+  boxes.reduce(function (p, box, i) {
+    return p.then(function () {
+      var src = box.querySelector("script[type='text/plain']").textContent.trim();
+      var full = src + "\n" + CLASSDEFS + "\n";
+      return mermaid.render("mmd-" + i, full).then(function (out) {
+        box.innerHTML = out.svg;
+        if (out.bindFunctions) out.bindFunctions(box);
+        var svg = box.querySelector("svg");
+        if (window.svgPanZoom && svg) {
+          var pz = svgPanZoom(svg, { controlIconsEnabled: false, zoomScaleSensitivity: 0.3, minZoom: 0.1, maxZoom: 20 });
+          pz.fit(); pz.center();
+          addToolbar(box, pz);
+        }
+      }).catch(function (err) { showError(box, err, src); });
+    });
+  }, Promise.resolve());
+})();
+</script>
+</body>
+</html>
