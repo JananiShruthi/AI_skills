@@ -4,180 +4,453 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Flow map: __TITLE__</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reactflow@11.11.4/dist/style.css">
 <style>
   :root {
-    --bg: #ffffff; --fg: #1f2328; --muted: #656d76; --border: #d0d7de; --panel: #f6f8fa;
-    --check: #fff3bf; --check-b: #e6a700; --error: #ffd8d8; --error-b: #d1242f;
-    --exit: #d3f9d8; --exit-b: #1a7f37; --ext: #eaeef2; --ext-b: #8c959f;
-    --io: #d0ebff; --io-b: #0969da; --loop: #f3d9fa; --loop-b: #8250df; --warn: #9a6700;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --bg: #0d1117; --fg: #e6edf3; --muted: #8d96a0; --border: #30363d; --panel: #161b22; --warn: #d29922;
-    }
+    --bg: #f6f8fa; --surface: #ffffff; --fg: #1f2328; --muted: #656d76; --border: #d0d7de;
+    --accent: #0969da; --accent-bg: #ddf4ff;
+    --yes: #1a7f37; --no: #cf222e; --exc: #bc4c00; --back: #8c959f;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--fg);
-         font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-  main { max-width: 1400px; margin: 0 auto; padding: 24px 16px 64px; }
-  h1 { font-size: 22px; margin: 0 0 4px; }
-  h2 { font-size: 17px; margin: 40px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
-  h3 { font-size: 15px; margin: 24px 0 8px; }
-  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
-  .meta { color: var(--muted); }
-  .meta code { color: var(--fg); }
-  nav { margin: 12px 0; display: flex; flex-wrap: wrap; gap: 6px 14px; }
-  nav a { color: var(--io-b); text-decoration: none; }
-  .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
-  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
-          border: 1.5px solid; font-size: 12.5px; color: #1f2328; }
-  .chip.check { background: var(--check); border-color: var(--check-b); }
-  .chip.error { background: var(--error); border-color: var(--error-b); }
-  .chip.exit { background: var(--exit); border-color: var(--exit-b); }
-  .chip.ext { background: var(--ext); border-color: var(--ext-b); }
-  .chip.io { background: var(--io); border-color: var(--io-b); }
-  .chip.loop { background: var(--loop); border-color: var(--loop-b); }
-  .chip.fn { background: #fff; border-color: #57606a; border-style: double; border-width: 3px; }
-  .chip.unres { background: transparent; border-style: dashed; border-color: var(--muted); color: var(--fg); }
-  .diagram { position: relative; border: 1px solid var(--border); border-radius: 8px; background: #fff;
-             height: 70vh; min-height: 360px; overflow: hidden; }
-  .diagram svg { width: 100% !important; height: 100% !important; max-width: none !important; }
-  .diagram .nodeLabel b { display: inline-block; font-size: 13.5px; font-weight: 600; margin-bottom: 2px; }
-  .diagram .nodeLabel code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px;
-                             background: rgba(255,255,255,.6); padding: 0 3px; border-radius: 3px; color: #24292f; }
-  .diagram .nodeLabel small { font-size: 10.5px; color: #57606a; }
-  .diagram .edgeLabel { font-size: 11.5px; color: #424a53; }
-  .diagram .cluster rect { fill: #f6f8fa !important; stroke: #d0d7de !important; }
-  .diagram .cluster .nodeLabel, .diagram .cluster-label { font-weight: 600; }
-  .toolbar { position: absolute; top: 8px; right: 8px; z-index: 2; display: flex; gap: 4px; }
-  .toolbar button { border: 1px solid #d0d7de; background: #fff; color: #1f2328; border-radius: 6px;
-                    padding: 2px 9px; cursor: pointer; font-size: 13px; }
-  .render-error { padding: 16px; color: #d1242f; white-space: pre-wrap; overflow: auto; height: 100%; background: #fff; }
-  .render-error pre { color: #1f2328; background: #f6f8fa; padding: 8px; overflow: auto; }
-  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
-  table { border-collapse: collapse; width: 100%; min-width: 760px; }
-  th, td { text-align: left; vertical-align: top; padding: 6px 10px; border-bottom: 1px solid var(--border); }
-  th { background: var(--panel); font-weight: 600; white-space: nowrap; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+               font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  code, .mono { font-family: var(--mono); font-size: 12px; }
+  a { color: var(--accent); cursor: pointer; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  button { font: inherit; cursor: pointer; }
+
+  header.top { background: var(--surface); border-bottom: 1px solid var(--border); padding: 14px 16px 0; }
+  .title-row { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 18px; margin: 0; }
+  h1 code { font-size: 15px; background: var(--bg); padding: 1px 6px; border-radius: 6px; }
+  .meta { color: var(--muted); font-size: 12.5px; }
+  .summary { margin: 6px 0 0; max-width: 900px; }
+  .tabs { display: flex; gap: 2px; margin-top: 12px; overflow-x: auto; overflow-y: hidden; }
+  .tab { border: 1px solid transparent; border-bottom: none; background: none; padding: 7px 12px;
+         border-radius: 8px 8px 0 0; color: var(--muted); white-space: nowrap; text-align: left; }
+  .tab:hover { color: var(--fg); background: var(--bg); }
+  .tab.on { background: var(--bg); border-color: var(--border); color: var(--fg); font-weight: 600;
+            margin-bottom: -1px; }
+  .tab small { display: block; font-weight: 400; color: var(--muted); font-family: var(--mono); font-size: 11px; }
+
+  .workspace { display: flex; height: 78vh; min-height: 460px; border-bottom: 1px solid var(--border); }
+  .workspace.full { position: fixed; inset: 0; height: auto; z-index: 50; background: var(--bg); }
+  .canvas { flex: 1; position: relative; min-width: 0; }
+  .canvas-tools { position: absolute; top: 10px; left: 10px; right: 10px; z-index: 5; display: flex; gap: 8px;
+                  align-items: flex-start; pointer-events: none; }
+  .canvas-tools > * { pointer-events: auto; }
+  .search { position: relative; width: 300px; max-width: 60%; }
+  .search input { width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px;
+                  background: var(--surface); font: inherit; }
+  .results { position: absolute; top: 38px; left: 0; right: 0; background: var(--surface); border: 1px solid var(--border);
+             border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.12); max-height: 320px; overflow: auto; }
+  .results div { padding: 6px 10px; cursor: pointer; border-bottom: 1px solid var(--bg); }
+  .results div:hover { background: var(--accent-bg); }
+  .results small { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+  .btn { border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 6px 10px; }
+  .btn:hover { background: var(--bg); }
+  .legend { margin-left: auto; display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; max-width: 55%; }
+  .chip { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid; background: var(--surface); }
+
+  /* nodes */
+  .card { width: 280px; background: var(--surface); border: 1.5px solid #c8d1da; border-left-width: 5px;
+          border-radius: 8px; padding: 7px 10px 6px; box-shadow: 0 1px 2px rgba(0,0,0,.06); cursor: pointer; }
+  .card:hover { box-shadow: 0 3px 10px rgba(0,0,0,.12); }
+  .card.sel { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .card.hit { outline: 3px dashed #bf8700; outline-offset: 2px; }
+  .card .kind { display: flex; justify-content: space-between; align-items: center; font-size: 10.5px;
+                text-transform: uppercase; letter-spacing: .04em; font-weight: 600; margin-bottom: 2px; }
+  .card .badges span { margin-left: 4px; text-transform: none; letter-spacing: 0; font-weight: 500;
+                       padding: 0 5px; border-radius: 4px; background: #fff8c5; color: #7d4e00; }
+  .card .badges span.bad { background: #ffebe9; color: #a40e26; }
+  .card .lbl { font-weight: 600; font-size: 13.5px; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 3;
+               -webkit-box-orient: vertical; overflow: hidden; }
+  .card .code { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+                font-family: var(--mono); font-size: 11px; color: #424a53; background: rgba(175,184,193,.18);
+                border-radius: 4px; padding: 2px 5px; margin-top: 4px; word-break: break-all; }
+  .card .loc { font-family: var(--mono); font-size: 10.5px; color: var(--muted); margin-top: 3px;
+               display: flex; justify-content: space-between; }
+  .card .open { font-family: inherit; font-size: 11px; border: 1px solid #8250df; color: #8250df; background: #fff;
+                border-radius: 5px; padding: 0 6px; }
+  .card .open:hover { background: #fbefff; }
+  .k-input  { border-color: #54aeff; border-left-color: #0969da; background: #f1f8ff; } .k-input .kind { color: #0969da; }
+  .k-step   { border-left-color: #8c959f; } .k-step .kind { color: #656d76; }
+  .k-call   { border-color: #c297ff; border-left-color: #8250df; background: #fbf7ff; } .k-call .kind { color: #8250df; }
+  .k-ext    { border-left-color: #6e7781; background: #f6f8fa; } .k-ext .kind { color: #57606a; }
+  .k-unres  { border-style: dashed; border-left-style: solid; border-left-color: #8c959f; } .k-unres .kind { color: #57606a; }
+  .k-check  { border-color: #e6c35c; border-left-color: #bf8700; background: #fffbea; } .k-check .kind { color: #9a6700; }
+  .k-loop   { border-color: #e3b6f5; border-left-color: #a43fd1; background: #fdf5ff; } .k-loop .kind { color: #8e2fb8; }
+  .k-except { border-color: #ffc38a; border-left-color: #bc4c00; background: #fff6ed; } .k-except .kind { color: #bc4c00; }
+  .k-error  { border-color: #ffaba8; border-left-color: #cf222e; background: #fff2f1; } .k-error .kind { color: #cf222e; }
+  .k-exit   { border-color: #8ddb9a; border-left-color: #1a7f37; background: #f0fbf2; } .k-exit .kind { color: #1a7f37; }
+  .react-flow__handle { opacity: 0; width: 6px; height: 6px; }
+  .react-flow__edge-textbg { fill: var(--bg); }
+  .react-flow__attribution { display: none; }
+
+  /* details panel */
+  aside.details { width: 360px; background: var(--surface); border-left: 1px solid var(--border); overflow: auto;
+                  padding: 14px 16px; }
+  aside h3 { font-size: 15px; margin: 4px 0 8px; }
+  aside .row { margin: 10px 0; }
+  aside .row > b { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  aside pre { white-space: pre-wrap; word-break: break-word; background: var(--bg); padding: 8px; border-radius: 6px;
+              margin: 4px 0 0; font-family: var(--mono); font-size: 12px; }
+  aside ul { margin: 4px 0 0; padding-left: 18px; }
+  .hint { color: var(--muted); }
+  .note { background: #fff8c5; border: 1px solid #eac54f; border-radius: 6px; padding: 6px 8px; margin-top: 6px; }
+
+  /* report sections */
+  main.report { max-width: 1400px; margin: 0 auto; padding: 8px 16px 64px; }
+  h2 { font-size: 16px; margin: 28px 0 10px; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; min-width: 820px; }
+  th, td { text-align: left; vertical-align: top; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+  th { background: var(--bg); font-weight: 600; font-size: 12.5px; white-space: nowrap; }
+  tbody tr { cursor: pointer; } tbody tr:hover { background: var(--accent-bg); }
   tr:last-child td { border-bottom: none; }
-  .yes { color: var(--exit-b); } .no { color: var(--error-b); } .indirect { color: var(--warn); }
-  ul.notes { padding-left: 20px; }
-  ul.notes li { margin: 6px 0; }
-  .tag { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--panel);
+  td .sub { display: block; margin-top: 2px; }
+  .yes { color: var(--yes); } .no { color: var(--no); } .indirect { color: #9a6700; }
+  ul.notes { list-style: none; padding: 0; margin: 0; }
+  ul.notes li { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid #bf8700;
+                border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
+  ul.notes li.review { border-left-color: var(--no); }
+  .tag { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--bg);
          border: 1px solid var(--border); color: var(--muted); margin-right: 4px; }
   .empty { color: var(--muted); font-style: italic; }
+  .fatal { padding: 24px; color: var(--no); }
+  @media (max-width: 800px) {
+    .workspace { flex-direction: column; height: auto; }
+    .canvas { height: 70vh; flex: none; }
+    aside.details { width: auto; border-left: none; border-top: 1px solid var(--border); max-height: 50vh; }
+    .legend { display: none; }
+    .search { max-width: 100%; flex: 1; }
+  }
 </style>
 </head>
 <body>
-<main>
-  <h1>Flow map: <code>__TITLE__</code></h1>
-  <div class="meta">__META__</div>
-  <nav>
-    <a href="#diagrams">Diagrams</a><a href="#checks">Checks</a>
-    <a href="#unresolved">Unresolved</a><a href="#external">External calls</a><a href="#review">Review notes</a>
-  </nav>
-
-  <div class="legend">
-    <span class="chip check">◆ check</span>
-    <span class="chip error">error / raise</span>
-    <span class="chip exit">return / exit</span>
-    <span class="chip ext">external library</span>
-    <span class="chip io">▱ data in / out</span>
-    <span class="chip loop">⬡ loop</span>
-    <span class="chip fn">collapsed function (click)</span>
-    <span class="chip unres">┄ unresolved call</span>
-  </div>
-
-  <h2 id="diagrams">Diagrams</h2>
-  <!-- One <section> per diagram. The Mermaid source goes inside the <script type="text/plain">
-       block verbatim (no HTML escaping). Style classes (check, error, exit, ext, io, loop, fn,
-       unres) are injected automatically, do not add classDef lines. -->
-__DIAGRAMS__
-
-  <h2 id="checks">Checks</h2>
-  <div class="table-wrap">
-  <table>
-    <thead><tr><th>#</th><th>Check</th><th>Kind</th><th>Location</th><th>If true →</th><th>If false →</th><th>Tested? <span class="meta">(__TEST_METHOD__)</span></th></tr></thead>
-    <tbody>
-__CHECK_ROWS__
-    </tbody>
-  </table>
-  </div>
-
-  <h2 id="unresolved">Unresolved calls</h2>
-__UNRESOLVED__
-
-  <h2 id="external">External calls</h2>
-__EXTERNAL__
-
-  <h2 id="review">Review notes</h2>
-__REVIEW_NOTES__
-</main>
-
-<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<div id="app"><p class="fatal" id="boot">Loading flow map… (needs internet access for React Flow from cdn.jsdelivr.net)</p></div>
+<script id="flow-data" type="application/json">__FLOW_DATA__</script>
+<script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reactflow@11.11.4/dist/umd/index.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@dagrejs/dagre@1.1.4/dist/dagre.min.js"></script>
 <script>
 (function () {
-  var CLASSDEFS = [
-    "classDef check fill:#fff3bf,stroke:#e6a700,stroke-width:1.5px,color:#1f2328",
-    "classDef error fill:#ffd8d8,stroke:#d1242f,stroke-width:1.5px,color:#1f2328",
-    "classDef exit fill:#d3f9d8,stroke:#1a7f37,stroke-width:1.5px,color:#1f2328",
-    "classDef ext fill:#eaeef2,stroke:#8c959f,stroke-width:1px,color:#1f2328",
-    "classDef io fill:#d0ebff,stroke:#0969da,stroke-width:1.5px,color:#1f2328",
-    "classDef loop fill:#f3d9fa,stroke:#8250df,stroke-width:1.5px,color:#1f2328",
-    "classDef fn fill:#ffffff,stroke:#57606a,stroke-width:3px,color:#1f2328",
-    "classDef unres fill:#ffffff,stroke:#8c959f,stroke-dasharray:5 4,color:#1f2328"
-  ].join("\n");
-
-  function showError(box, err, src) {
-    box.innerHTML = "";
-    var div = document.createElement("div");
-    div.className = "render-error";
-    div.textContent = "Mermaid could not render this diagram:\n" + (err && err.message ? err.message : err) + "\n\nSource:";
-    var pre = document.createElement("pre");
-    pre.textContent = src;
-    div.appendChild(pre);
-    box.appendChild(div);
-  }
-
-  function addToolbar(box, pz) {
-    var bar = document.createElement("div");
-    bar.className = "toolbar";
-    [["+", function () { pz.zoomIn(); }], ["−", function () { pz.zoomOut(); }],
-     ["Fit", function () { pz.resize(); pz.fit(); pz.center(); }]].forEach(function (b) {
-      var btn = document.createElement("button");
-      btn.textContent = b[0];
-      btn.onclick = b[1];
-      bar.appendChild(btn);
-    });
-    box.appendChild(bar);
-  }
-
-  if (!window.mermaid) {
-    document.querySelectorAll(".diagram").forEach(function (box) {
-      showError(box, "Mermaid failed to load from the CDN (offline?).", box.querySelector("script").textContent);
-    });
+  "use strict";
+  var DATA = JSON.parse(document.getElementById("flow-data").textContent);
+  if (!window.React || !window.ReactFlow || !window.dagre) {
+    document.getElementById("boot").textContent = "Could not load React Flow / dagre from cdn.jsdelivr.net. Are you offline?";
     return;
   }
-  mermaid.initialize({ startOnLoad: false, securityLevel: "antiscript", theme: "default",
-                       flowchart: { htmlLabels: true, curve: "basis", useMaxWidth: false }, maxTextSize: 200000 });
+  var h = React.createElement, useState = React.useState, useMemo = React.useMemo, useEffect = React.useEffect,
+      useCallback = React.useCallback;
+  var RF = window.ReactFlow, Flow = RF.ReactFlow || RF.default;
 
-  var boxes = Array.prototype.slice.call(document.querySelectorAll(".diagram"));
-  boxes.reduce(function (p, box, i) {
-    return p.then(function () {
-      var src = box.querySelector("script[type='text/plain']").textContent.trim();
-      var full = src + "\n" + CLASSDEFS + "\n";
-      return mermaid.render("mmd-" + i, full).then(function (out) {
-        box.innerHTML = out.svg;
-        if (out.bindFunctions) out.bindFunctions(box);
-        var svg = box.querySelector("svg");
-        if (window.svgPanZoom && svg) {
-          var pz = svgPanZoom(svg, { controlIconsEnabled: false, zoomScaleSensitivity: 0.3, minZoom: 0.1, maxZoom: 20 });
-          pz.fit(); pz.center();
-          addToolbar(box, pz);
-        }
-      }).catch(function (err) { showError(box, err, src); });
+  var KIND = {
+    input: { name: "Input", icon: "▱" }, step: { name: "Step", icon: "•" }, call: { name: "Calls function", icon: "↗" },
+    ext: { name: "Library call", icon: "⧉" }, unres: { name: "Unresolved call", icon: "?" },
+    check: { name: "Check", icon: "◆" }, loop: { name: "Loop", icon: "⟳" }, except: { name: "Catches error", icon: "⚠" },
+    error: { name: "Error", icon: "✖" }, exit: { name: "Exit", icon: "⏎" }
+  };
+  var EDGE_COLORS = { yes: "#1a7f37", no: "#cf222e", exc: "#bc4c00", back: "#8c959f", data: "#57606a", "": "#57606a" };
+
+  // ---------------------------------------------------------------- indexes
+  var nodeById = {}, outEdges = {}, inEdges = {}, fnByKey = {};
+  DATA.nodes.forEach(function (n) { nodeById[n.id] = n; });
+  DATA.edges.forEach(function (e) {
+    (outEdges[e.source] = outEdges[e.source] || []).push(e);
+    (inEdges[e.target] = inEdges[e.target] || []).push(e);
+  });
+  DATA.functions.forEach(function (f) { fnByKey[f.key] = f; });
+  function label(n) { return n.label || n.code; }
+  function lineOf(loc) { var m = /:(\d+)/.exec(loc || ""); return m ? +m[1] : 0; }
+  function notesFor(n) {
+    return DATA.notes.filter(function (x) { return x.loc === n.loc; });
+  }
+  function testStatus(n) {
+    if (n.covered === true) return { cls: "yes", text: "✓ line ran" };
+    if (n.covered === false) return { cls: "no", text: "✗ never ran" };
+    var f = fnByKey[n.fn] || {};
+    if (f.test_reach === "direct") return { cls: "yes", text: "✓ referenced in " + (f.test_refs[0] || "tests") };
+    if (f.test_reach && f.test_reach.indexOf("indirect") === 0) return { cls: "indirect", text: "~ " + f.test_reach };
+    return { cls: "no", text: "✗ no test reference" };
+  }
+  function fnTitle(f) { return f.title || f.qualname; }
+
+  // ---------------------------------------------------------------- layout
+  var W = 280;
+  function estHeight(n) {
+    var lbl = Math.min(3, Math.ceil(label(n).length / 30)) * 18;
+    var code = n.label ? Math.min(2, Math.ceil(n.code.length / 40)) * 15 + 8 : 0;
+    return 24 + lbl + code + 18 + 14;
+  }
+  var layoutCache = {};
+  function layout(fnKey) {
+    if (layoutCache[fnKey]) return layoutCache[fnKey];
+    var ns = DATA.nodes.filter(function (n) { return n.fn === fnKey; });
+    var ids = {}; ns.forEach(function (n) { ids[n.id] = 1; });
+    var es = DATA.edges.filter(function (e) { return ids[e.source] && ids[e.target]; });
+    var g = new dagre.graphlib.Graph({ multigraph: true });
+    g.setGraph({ rankdir: "TB", nodesep: 60, ranksep: 64, edgesep: 24, marginx: 20, marginy: 20 });
+    g.setDefaultEdgeLabel(function () { return {}; });
+    ns.forEach(function (n) { g.setNode(n.id, { width: W, height: estHeight(n) }); });
+    es.forEach(function (e) {
+      if (e.style === "back") return; // loops back up: keep them out of the ranking so the flow reads top-down
+      var lw = e.label ? Math.min(220, e.label.length * 6.4 + 14) : 0;
+      g.setEdge(e.source, e.target, { width: lw, height: e.label ? 18 : 0, labelpos: "c" }, e.id);
     });
-  }, Promise.resolve());
+    dagre.layout(g);
+    var pos = {};
+    ns.forEach(function (n) { var p = g.node(n.id); pos[n.id] = { x: p.x - W / 2, y: p.y - p.height / 2 }; });
+    return (layoutCache[fnKey] = { nodes: ns, edges: es, pos: pos });
+  }
+
+  // ---------------------------------------------------------------- node card
+  function Card(props) {
+    var n = props.data.n, open = props.data.open;
+    var badges = [];
+    if (n.kind === "except" && n.swallows) badges.push(h("span", { key: "s", className: "bad" }, "swallows"));
+    if (n.unresolved) badges.push(h("span", { key: "u", className: "bad" }, "unresolved"));
+    if (notesFor(n).length) badges.push(h("span", { key: "n" }, "⚠ " + notesFor(n).length));
+    if (n.covered === false) badges.push(h("span", { key: "c", className: "bad" }, "never ran"));
+    var cls = "card k-" + n.kind + (props.data.sel ? " sel" : "") + (props.data.hit ? " hit" : "");
+    var k = KIND[n.kind] || { name: n.kind, icon: "" };
+    return h("div", { className: cls, title: n.code },
+      h(RF.Handle, { type: "target", position: RF.Position.Top }),
+      h(RF.Handle, { type: "target", position: RF.Position.Right, id: "rin", style: { top: "30%" } }),
+      h("div", { className: "kind" }, h("span", null, k.icon + " " + k.name), h("span", { className: "badges" }, badges)),
+      h("div", { className: "lbl" }, label(n)),
+      n.label ? h("div", { className: "code" }, n.code) : null,
+      h("div", { className: "loc" }, h("span", null, n.loc),
+        n.target ? (n.expanded
+          ? h("button", { className: "open nodrag", onClick: function (ev) { ev.stopPropagation(); open(n.target); } },
+              "open " + n.target.split(":").pop() + " ▸")
+          : h("span", { title: "Beyond --depth; re-run with a larger depth to expand" }, "not expanded")) : null),
+      h(RF.Handle, { type: "source", position: RF.Position.Bottom }),
+      h(RF.Handle, { type: "source", position: RF.Position.Right, id: "r", style: { top: "70%" } }));
+  }
+  var nodeTypes = { card: Card };
+
+  // ---------------------------------------------------------------- canvas
+  function Canvas(props) {
+    var api = RF.useReactFlow();
+    var L = layout(props.fn);
+    var sel = props.selected, hit = props.focus;
+    var nodes = useMemo(function () {
+      return L.nodes.map(function (n) {
+        return { id: n.id, type: "card", position: L.pos[n.id],
+                 data: { n: n, sel: sel === n.id, hit: hit === n.id, open: props.openFn } };
+      });
+    }, [props.fn, sel, hit]);
+    var edges = useMemo(function () {
+      return L.edges.map(function (e) {
+        var c = EDGE_COLORS[e.style] || EDGE_COLORS[""];
+        var active = sel && (e.source === sel || e.target === sel);
+        var dashed = e.style === "back" || e.style === "exc";
+        return {
+          id: e.id, source: e.source, target: e.target, label: e.label || undefined,
+          sourceHandle: e.style === "back" ? "r" : undefined, targetHandle: e.style === "back" ? "rin" : undefined,
+          type: "smoothstep", animated: !!active, zIndex: active ? 10 : 0,
+          pathOptions: { borderRadius: 12, offset: e.style === "back" ? 36 : 20 },
+          style: { stroke: active ? "#0969da" : c, strokeWidth: active ? 2.6 : 1.6, strokeDasharray: dashed ? "6 4" : undefined },
+          labelStyle: { fill: c, fontWeight: e.style === "yes" || e.style === "no" ? 700 : 500, fontSize: 11.5,
+                        fontStyle: e.style === "data" ? "italic" : "normal" },
+          labelBgPadding: [5, 2], labelBgBorderRadius: 4,
+          markerEnd: { type: RF.MarkerType.ArrowClosed, color: active ? "#0969da" : c, width: 16, height: 16 }
+        };
+      });
+    }, [props.fn, sel]);
+    useEffect(function () {
+      if (!hit) return;
+      var p = L.pos[hit]; if (!p) return;
+      api.setCenter(p.x + W / 2, p.y + 40, { zoom: 1.1, duration: 500 });
+    }, [hit, props.fn, props.focusTick]);
+    // Open at a readable zoom: fit small graphs, otherwise start at the top of the flow at ~90%.
+    var onInit = useCallback(function (inst) {
+      var box = document.querySelector(".canvas").getBoundingClientRect();
+      var xs = [], ys = [];
+      L.nodes.forEach(function (n) { var p = L.pos[n.id]; xs.push(p.x, p.x + W); ys.push(p.y, p.y + estHeight(n)); });
+      var minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
+      var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+      var top = 64, fit = Math.min(box.width / (maxX - minX + 80), (box.height - top) / (maxY - minY + 40));
+      if (fit >= 0.75) { inst.fitView({ padding: 0.12, maxZoom: 1 }); return; }
+      var z = Math.max(0.55, Math.min(0.9, box.width / (maxX - minX + 80)));
+      inst.setViewport({ x: box.width / 2 - ((minX + maxX) / 2) * z, y: top - minY * z, zoom: z });
+    }, [props.fn]);
+    return h(Flow, {
+      nodes: nodes, edges: edges, nodeTypes: nodeTypes, onInit: onInit,
+      minZoom: 0.1, maxZoom: 2.5, nodesDraggable: true, nodesConnectable: false, elementsSelectable: true,
+      onNodeClick: function (_, node) { props.onSelect(node.id); },
+      onPaneClick: function () { props.onSelect(null); },
+      proOptions: { hideAttribution: true }
+    },
+      h(RF.Background, { gap: 22, size: 1, color: "#d0d7de" }),
+      h(RF.Controls, { showInteractive: false }),
+      h(RF.MiniMap, { pannable: true, zoomable: true, nodeStrokeWidth: 3,
+        nodeColor: function (nd) { var k = nd.data.n.kind;
+          return { check: "#f5d76e", loop: "#e3b6f5", except: "#ffc38a", error: "#ffaba8", exit: "#8ddb9a",
+                   input: "#9cd1ff", call: "#c297ff" }[k] || "#d0d7de"; } }));
+  }
+
+  // ---------------------------------------------------------------- details panel
+  function Details(props) {
+    var n = props.node;
+    if (!n) {
+      return h("aside", { className: "details" },
+        h("h3", null, "Click any box"),
+        h("p", { className: "hint" }, "to see its full code, where each branch goes, test status and review notes."),
+        h("p", { className: "hint" }, "Scroll to zoom · drag to pan · ", h("b", null, "open ▸"), " on purple boxes jumps into that function · search finds any step across all functions."));
+    }
+    var k = KIND[n.kind] || { name: n.kind };
+    var outs = outEdges[n.id] || [], ins = inEdges[n.id] || [];
+    var ts = testStatus(n);
+    var unres = DATA.unresolved.filter(function (u) { return u.loc === n.loc; });
+    function link(id, text) { return h("a", { onClick: function () { props.go(id); } }, text); }
+    return h("aside", { className: "details" },
+      h("div", { className: "meta" }, (k.icon || "") + " " + k.name + " · ", h("a", { href: "#" + n.id, title: "Link to this step" }, "#" + n.id)),
+      h("h3", null, label(n)),
+      h("div", { className: "row" }, h("b", null, "Code"), h("pre", null, n.code)),
+      h("div", { className: "row" }, h("b", null, "Where"), h("code", null, n.loc), " in ",
+        h("code", null, (fnByKey[n.fn] || {}).qualname)),
+      n.tags && n.tags.length ? h("div", { className: "row" }, h("b", null, "Kind of check"),
+        n.tags.map(function (t) { return h("span", { key: t, className: "tag" }, t.replace("_", " ")); })) : null,
+      n.lib ? h("div", { className: "row" }, h("b", null, "Library"), h("code", null, n.lib)) : null,
+      n.target ? h("div", { className: "row" }, h("b", null, "Calls"),
+        n.expanded ? h("a", { onClick: function () { props.openFn(n.target); } }, n.target + " ▸")
+                   : h("span", null, h("code", null, n.target), " (not expanded: beyond depth " + DATA.max_depth + ")")) : null,
+      unres.length ? h("div", { className: "row" }, h("b", null, "Unresolved"),
+        unres.map(function (u, i) { return h("div", { key: i }, h("code", null, u.call), " — " + (u.reason || "")); })) : null,
+      n.decorators && n.decorators.length ? h("div", { className: "row" }, h("b", null, "Decorators"),
+        n.decorators.map(function (d) { return h("div", { key: d }, h("code", null, "@" + d)); })) : null,
+      outs.length ? h("div", { className: "row" }, h("b", null, "Goes to"), h("ul", null, outs.map(function (e) {
+        return h("li", { key: e.id }, e.label ? h("b", null, e.label + " → ") : "→ ", link(e.target, label(nodeById[e.target])));
+      }))) : null,
+      ins.length ? h("div", { className: "row" }, h("b", null, "Comes from"), h("ul", null, ins.map(function (e) {
+        return h("li", { key: e.id }, link(e.source, label(nodeById[e.source])), e.label ? h("span", { className: "meta" }, " (" + e.label + ")") : null);
+      }))) : null,
+      h("div", { className: "row" }, h("b", null, "Tested?"), h("span", { className: ts.cls }, ts.text)),
+      notesFor(n).map(function (x, i) { return h("div", { key: i, className: "note" }, "⚠️ " + x.text); }));
+  }
+
+  // ---------------------------------------------------------------- report sections
+  function ChecksTable(props) {
+    var rows = DATA.nodes.filter(function (n) { return n.kind === "check" || n.kind === "loop" || n.kind === "except"; });
+    if (!rows.length) return h("p", { className: "empty" }, "No checks found.");
+    return h("div", { className: "table-wrap" }, h("table", null,
+      h("thead", null, h("tr", null, ["#", "Check", "Function", "Location", "Outcomes", "Tested? (" + DATA.test_method + ")"]
+        .map(function (t) { return h("th", { key: t }, t); }))),
+      h("tbody", null, rows.map(function (n) {
+        var ts = testStatus(n);
+        return h("tr", { key: n.id, onClick: function () { props.go(n.id); } },
+          h("td", null, n.id),
+          h("td", null, h("b", null, label(n)), n.label ? h("code", { className: "sub" }, n.code) : null),
+          h("td", null, h("code", null, (fnByKey[n.fn] || {}).qualname)),
+          h("td", null, h("code", null, n.loc)),
+          h("td", null, (outEdges[n.id] || []).map(function (e) {
+            return h("div", { key: e.id }, h("b", null, (e.label || "then") + " → "), label(nodeById[e.target]));
+          })),
+          h("td", null, h("span", { className: ts.cls }, ts.text)));
+      }))));
+  }
+  function goLoc(go, loc) {
+    var exact = DATA.nodes.filter(function (n) { return n.loc === loc; })[0];
+    if (exact) return go(exact.id);
+    var file = loc.split(":")[0], line = lineOf(loc);
+    var best = null;
+    DATA.nodes.forEach(function (n) {
+      if (n.loc.split(":")[0] !== file) return;
+      var d = Math.abs(lineOf(n.loc) - line);
+      if (!best || d < best.d) best = { d: d, id: n.id };
+    });
+    if (best) go(best.id);
+  }
+  function Notes(props) {
+    if (!DATA.notes.length) return h("p", { className: "empty" }, "No issues spotted.");
+    return h("ul", { className: "notes" }, DATA.notes.map(function (x, i) {
+      return h("li", { key: i, className: x.type === "review" ? "review" : "" },
+        "⚠️ ", h("a", { onClick: function () { goLoc(props.go, x.loc); } }, h("code", null, x.loc)), " — ", x.text,
+        x.type !== "review" ? h("span", { className: "tag", style: { marginLeft: 6 } }, x.type.replace(/_/g, " ")) : null);
+    }));
+  }
+
+  // ---------------------------------------------------------------- app
+  function Search(props) {
+    var st = useState(""), q = st[0], setQ = st[1];
+    var hits = useMemo(function () {
+      var s = q.trim().toLowerCase(); if (s.length < 2) return [];
+      return DATA.nodes.filter(function (n) {
+        return (label(n) + " " + n.code + " " + n.loc).toLowerCase().indexOf(s) >= 0;
+      }).slice(0, 30);
+    }, [q]);
+    return h("div", { className: "search" },
+      h("input", { placeholder: "Search steps, code, file:line…", value: q, onChange: function (e) { setQ(e.target.value); } }),
+      hits.length ? h("div", { className: "results" }, hits.map(function (n) {
+        return h("div", { key: n.id, onClick: function () { props.go(n.id); setQ(""); } },
+          label(n), h("br"), h("small", null, n.loc + " · " + (fnByKey[n.fn] || {}).qualname));
+      })) : null);
+  }
+
+  function App() {
+    var a = useState(DATA.functions[0].key), fn = a[0], setFn = a[1];
+    var b = useState(null), sel = b[0], setSel = b[1];
+    var c = useState(null), focus = c[0], setFocus = c[1];
+    var d = useState(0), tick = d[0], setTick = d[1];
+    var e = useState(false), full = e[0], setFull = e[1];
+    var go = useCallback(function (id) {
+      var n = nodeById[id]; if (!n) return;
+      setFn(n.fn); setSel(id); setFocus(id); setTick(function (t) { return t + 1; });
+      var ws = document.querySelector(".workspace");
+      if (ws && ws.getBoundingClientRect().top < -40) ws.scrollIntoView({ behavior: "smooth" });
+    }, []);
+    var openFn = useCallback(function (key) { setFn(key); setSel(null); setFocus(null); }, []);
+    useEffect(function () {  // deep link: page.html#n12 selects that step
+      function fromHash() { var id = location.hash.slice(1); if (nodeById[id]) go(id); }
+      fromHash();
+      window.addEventListener("hashchange", fromHash);
+      return function () { window.removeEventListener("hashchange", fromHash); };
+    }, []);
+    var f = fnByKey[fn];
+    var s = DATA.stats;
+    return h(React.Fragment, null,
+      h("header", { className: "top" },
+        h("div", { className: "title-row" },
+          h("h1", null, "Flow map ", h("code", null, DATA.entry)),
+          h("span", { className: "meta" }, DATA.functions.length + " function(s) · " + s.checks + " checks · " +
+            DATA.nodes.length + " steps · depth " + DATA.max_depth)),
+        DATA.summary ? h("p", { className: "summary" }, DATA.summary) : null,
+        h("div", { className: "tabs" }, DATA.functions.map(function (x) {
+          return h("button", { key: x.key, className: "tab" + (x.key === fn ? " on" : ""), onClick: function () { openFn(x.key); } },
+            (x.depth ? "↳ ".repeat(1) : "") + fnTitle(x), h("small", null, x.qualname + " · " + x.file + ":" + x.line));
+        }))),
+      h("div", { className: "workspace" + (full ? " full" : "") },
+        h("div", { className: "canvas" },
+          h("div", { className: "canvas-tools" },
+            h(Search, { go: go }),
+            h("button", { className: "btn", onClick: function () { setFull(!full); } }, full ? "✕ Exit full screen" : "⤢ Full screen"),
+            h("div", { className: "legend" }, Object.keys(KIND).map(function (k) {
+              return h("span", { key: k, className: "chip card-chip k-" + k, style: { borderLeftWidth: 1 } }, KIND[k].icon + " " + KIND[k].name);
+            }))),
+          h(RF.ReactFlowProvider, { key: fn },
+            h(Canvas, { fn: fn, selected: sel, focus: focus, focusTick: tick, onSelect: setSel, openFn: openFn }))),
+        h(Details, { node: sel ? nodeById[sel] : null, go: go, openFn: openFn })),
+      h("main", { className: "report" },
+        h("h2", null, "Review notes"), h(Notes, { go: go }),
+        h("h2", null, "Checks (" + DATA.nodes.filter(function (n) { return n.kind === "check" || n.kind === "loop" || n.kind === "except"; }).length + ")"),
+        h(ChecksTable, { go: go }),
+        h("h2", null, "Unresolved calls"),
+        DATA.unresolved.length ? h("ul", null, DATA.unresolved.map(function (u, i) {
+          return h("li", { key: i }, h("a", { onClick: function () { goLoc(go, u.loc); } }, h("code", null, u.loc)), " ",
+            h("code", null, u.call), " — " + (u.reason || "") + ". Check by hand which function runs here.");
+        })) : h("p", { className: "empty" }, "None: every call was resolved."),
+        h("h2", null, "External libraries"),
+        DATA.external.length ? h("ul", null, DATA.external.map(function (x) { return h("li", { key: x }, h("code", null, x)); }))
+          : h("p", { className: "empty" }, "None."),
+        DATA.parse_errors.length ? h(React.Fragment, null, h("h2", null, "Files that could not be parsed"),
+          h("ul", null, DATA.parse_errors.map(function (p) { return h("li", { key: p.file }, h("code", null, p.file), " — " + p.error); }))) : null));
+  }
+
+  ReactDOM.createRoot(document.getElementById("app")).render(h(App));
 })();
 </script>
 </body>
