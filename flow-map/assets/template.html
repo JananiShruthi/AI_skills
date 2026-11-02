@@ -70,9 +70,11 @@
                 font-family: var(--mono); font-size: 11px; color: #424a53; background: rgba(175,184,193,.18);
                 border-radius: 4px; padding: 2px 5px; margin-top: 4px; word-break: break-all; }
   .card .loc { font-family: var(--mono); font-size: 10.5px; color: var(--muted); margin-top: 3px;
-               display: flex; justify-content: space-between; }
+               display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+  .card .loc > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .card .open { font-family: inherit; font-size: 11px; border: 1px solid #8250df; color: #8250df; background: #fff;
-                border-radius: 5px; padding: 0 6px; }
+                border-radius: 5px; padding: 0 6px; white-space: nowrap; flex-shrink: 0; max-width: 60%;
+                overflow: hidden; text-overflow: ellipsis; }
   .card .open:hover { background: #fbefff; }
   .k-input  { border-color: #54aeff; border-left-color: #0969da; background: #f1f8ff; } .k-input .kind { color: #0969da; }
   .k-step   { border-left-color: #8c959f; } .k-step .kind { color: #656d76; }
@@ -84,6 +86,8 @@
   .k-except { border-color: #ffc38a; border-left-color: #bc4c00; background: #fff6ed; } .k-except .kind { color: #bc4c00; }
   .k-error  { border-color: #ffaba8; border-left-color: #cf222e; background: #fff2f1; } .k-error .kind { color: #cf222e; }
   .k-exit   { border-color: #8ddb9a; border-left-color: #1a7f37; background: #f0fbf2; } .k-exit .kind { color: #1a7f37; }
+  .k-yield  { border-color: #8ddb9a; border-style: dashed; border-left-style: solid; border-left-color: #1a7f37;
+              background: #f0fbf2; } .k-yield .kind { color: #1a7f37; }
   .react-flow__handle { opacity: 0; width: 6px; height: 6px; }
   .react-flow__edge-textbg { fill: var(--bg); }
   .react-flow__attribution { display: none; }
@@ -151,7 +155,7 @@
     input: { name: "Input", icon: "▱" }, step: { name: "Step", icon: "•" }, call: { name: "Calls function", icon: "↗" },
     ext: { name: "Library call", icon: "⧉" }, unres: { name: "Unresolved call", icon: "?" },
     check: { name: "Check", icon: "◆" }, loop: { name: "Loop", icon: "⟳" }, except: { name: "Catches error", icon: "⚠" },
-    error: { name: "Error", icon: "✖" }, exit: { name: "Exit", icon: "⏎" }
+    error: { name: "Error", icon: "✖" }, exit: { name: "Exit", icon: "⏎" }, yield: { name: "Yields", icon: "↥" }
   };
   var EDGE_COLORS = { yes: "#1a7f37", no: "#cf222e", exc: "#bc4c00", back: "#8c959f", data: "#57606a", "": "#57606a" };
 
@@ -172,9 +176,10 @@
     if (n.covered === true) return { cls: "yes", text: "✓ line ran" };
     if (n.covered === false) return { cls: "no", text: "✗ never ran" };
     var f = fnByKey[n.fn] || {};
-    if (f.test_reach === "direct") return { cls: "yes", text: "✓ referenced in " + (f.test_refs[0] || "tests") };
+    if (f.test_reach === "direct") return { cls: "yes", text: "✓ called in " + (f.test_refs[0] || "tests") };
+    if (f.test_reach === "mocked") return { cls: "no", text: "✗ only mocked in " + (f.test_refs[0] || "tests") };
     if (f.test_reach && f.test_reach.indexOf("indirect") === 0) return { cls: "indirect", text: "~ " + f.test_reach };
-    return { cls: "no", text: "✗ no test reference" };
+    return { cls: "no", text: "✗ not called by tests" };
   }
   function fnTitle(f) { return f.title || f.qualname; }
 
@@ -290,7 +295,8 @@
       h(RF.MiniMap, { pannable: true, zoomable: true, nodeStrokeWidth: 3,
         nodeColor: function (nd) { var k = nd.data.n.kind;
           return { check: "#f5d76e", loop: "#e3b6f5", except: "#ffc38a", error: "#ffaba8", exit: "#8ddb9a",
-                   input: "#9cd1ff", call: "#c297ff" }[k] || "#d0d7de"; } }));
+                   input: "#9cd1ff", call: "#c297ff", yield: "#8ddb9a" }[k] || "#d0d7de"; },
+        style: { width: 150, height: 100, opacity: 0.85 } }));
   }
 
   // ---------------------------------------------------------------- details panel

@@ -28,6 +28,8 @@ SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE = os.path.join(SKILL_DIR, "assets", "template.html")
 
 
+PLAIN_MAX = 40  # assignments this short with no calls are left as code
+
 # --------------------------------------------------------------------------- graph building
 
 class GraphBuilder:
@@ -40,7 +42,9 @@ class GraphBuilder:
         self.known = known_functions
         self.checks = {c["id"]: c for c in fn["checks"]}
         self.nodes, self.edges = [], []
-        self.loops = []  # stack of {"node": id, "breaks": []}
+        self.loops = []   # stack of {"node": id, "breaks": []}
+        self.raises = []  # stack, one list per enclosing try body: (raise node id, exception text)
+        self.caught = set()
 
     def new(self, kind, code, loc, **kw):
         self.counter[0] += 1
@@ -120,7 +124,8 @@ class GraphBuilder:
         preds = self.seq(fn["flow"], preds)
         if preds:
             end = self.new("exit", "return None", f"{fn['file']}:{fn['end_line']}",
-                           label="End: returns nothing (falls off the end)")
+                           label="End: generator finishes" if fn.get("generator")
+                           else "End: returns nothing (falls off the end)")
             self.connect(preds, end)
         return self.nodes, self.edges
 
@@ -136,8 +141,12 @@ class GraphBuilder:
         if t in ("assign", "expr"):
             preds = self.inline_checks(it["calls"], preds)
             kind, hit = self.classify(it["calls"])
-            code = f"{', '.join(it['targets'])} = {it['value']}" if t == "assign" else it["value"]
-            n = self.new(kind, code, it["loc"], **self.call_extra(hit))
+            code = it.get("code") or (f"{', '.join(it['targets'])} = {it['value']}" if t == "assign" else it["value"])
+            # Short assignments with no calls read fine as code: the agent need not label them.
+            plain = kind == "step" and not it.get("auto") and len(code) <= PLAIN_MAX and \
+                not any("kind" in c for c in it["calls"])
+            n = self.new(kind, code, it["loc"], label=it.get("auto"), plain=plain or None,
+                         **self.call_extra(hit))
             self.connect(preds, n)
             data = ", ".join(it["targets"]) if t == "assign" else ""
             return [(n, data, "data" if data else "")]
@@ -162,19 +171,44 @@ class GraphBuilder:
             return done + ctx["breaks"]
         if t == "try":
             before = len(self.nodes)
+            self.raises.append([])
             body = self.seq(it["body"], preds)
+            pending = self.raises.pop()
             first = self.nodes[before]["id"] if len(self.nodes) > before else None
             outs = self.seq(it["else"], body) if it["else"] else body
+            a, b = it.get("lines") or (0, 0)
+            where = f" (line {a})" if a == b else f" (lines {a}–{b})"
+            handlers = []
             for h in it["handlers"]:
                 ch = self.checks[h["check"]]
                 n = self.check_node("except", h["check"], ch["cond"], h["loc"])
+                handlers.append((n, h["type"], ch))
                 if first:
-                    self.edge(first, n, f"raises {h['type'] or 'anything'}", "exc")
+                    self.edge(first, n, f"raises {h['type'] or 'anything'}{where}", "exc")
                 else:
                     self.connect(preds, n)
                 outs += self.seq(h["body"], [(n, "", "")])
+            for rid, exc in pending:  # an explicit raise inside the try goes to the handler that catches it
+                name = re.match(r"[\w.]*", exc).group().split(".")[-1]
+                target = next((n for n, typ, ch in handlers
+                               if ch.get("broad") or name in re.findall(r"\w+", typ or "")), None)
+                if target:
+                    self.edge(rid, target, "caught", "exc")
+                    self.caught.add(rid)
+                elif self.raises:
+                    self.raises[-1].append((rid, exc))
             if it["finally"]:
-                outs = self.seq(it["finally"], outs)
+                # finally also runs when the try returns or raises: draw that path separately, then let it leave.
+                leaving = [n["id"] for n in self.nodes[before:]
+                           if n["kind"] in ("exit", "error") and n["id"] not in self.caught and not n.get("finally_exit")]
+                if outs:
+                    outs = self.seq(it["finally"], outs)
+                if leaving:
+                    tail = self.seq(it["finally"], [(x, "then finally", "exc") for x in leaving])
+                    if tail:
+                        end = self.new("exit", "(the pending return / raise continues)", it["finally"][0]["loc"],
+                                       label="Leave: the return or error carries on", finally_exit=True)
+                        self.connect(tail, end)
             return outs
         if t == "with":
             kind, hit = self.classify(it["calls"])
@@ -201,7 +235,19 @@ class GraphBuilder:
             preds = self.inline_checks(it["calls"], preds)
             n = self.new("error", f"raise {it['exc']}", it["loc"])
             self.connect(preds, n)
+            if self.raises and it["exc"] != "re-raise":
+                self.raises[-1].append((n, it["exc"]))
             return []
+        if t == "terminate":
+            n = self.new("exit", it["value"], it["loc"])
+            self.connect(preds, n)
+            return []
+        if t == "yield":
+            preds = self.inline_checks(it["calls"], preds)
+            kind, hit = self.classify(it["calls"])
+            n = self.new("yield", it["value"], it["loc"], **(self.call_extra(hit) if kind == "call" else {}))
+            self.connect(preds, n)
+            return [(n, "", "")]
         if t == "return":
             preds = self.inline_checks(it["calls"], preds)
             kind, hit = self.classify(it["calls"])
@@ -245,6 +291,7 @@ def build_graph(analysis):
         "external": sorted({e.split(" (via ")[0] for e in analysis["external"]}),
         "notes": [{"loc": n["loc"], "type": n["type"], "text": n["detail"]} for n in analysis["review_notes"]],
         "parse_errors": analysis["parse_errors"],
+        "generators": [k for k, f in analysis["functions"].items() if f.get("generator")],
     }
 
 
@@ -261,15 +308,23 @@ def summary(graph, out_dir):
     out_edges = {}
     for e in graph["edges"]:
         out_edges.setdefault(e["source"], []).append(e)
+    label_depth = graph.get("label_depth")
     for f in graph["functions"]:
         lines.append(f"## {f['key']}  {f['file']}:{f['line']}-{f['end_line']}  depth {f['depth']}  "
                      f"tests: {f['test_reach']}")
-        for n in (n for n in graph["nodes"] if n["fn"] == f["key"]):
+        fn_nodes = [n for n in graph["nodes"] if n["fn"] == f["key"]]
+        if label_depth is not None and f["depth"] > label_depth:
+            lines += [f"  ({len(fn_nodes)} steps not listed: deeper than --label-depth {label_depth}; "
+                      "give this function a title only)", ""]
+            continue
+        for n in fn_nodes:
             line_no = n["loc"].rsplit(":", 1)[-1]
             code = n["code"] if len(n["code"]) <= 90 else n["code"][:87] + "..."
             s = f"  {n['id']:<4} {n['kind']:<{KIND_W}} :{line_no:<5} {code}"
             if n.get("label"):
                 s += f"   [auto: {n['label']}]"
+            elif n.get("plain"):
+                s += "   [code ok]"
             outs = out_edges.get(n["id"], [])
             if n["kind"] in ("check", "loop", "except") or len(outs) > 1:
                 branches = [f"{e['label']}→{e['target']}" if e["label"] else f"→{e['target']}" for e in outs]
@@ -307,7 +362,9 @@ def render(out_dir, output):
     for n in graph["nodes"]:
         if node_labels.get(n["id"]):
             n["label"] = node_labels[n["id"]]
-    missing = [n["id"] for n in graph["nodes"] if not n.get("label")]
+    label_depth = graph.get("label_depth")
+    shallow = {f["key"] for f in graph["functions"] if label_depth is None or f["depth"] <= label_depth}
+    missing = [n["id"] for n in graph["nodes"] if not n.get("label") and not n.get("plain") and n["fn"] in shallow]
     edge_labels = labels.get("edges", {})
     for e in graph["edges"]:
         key = f"{e['source']}>{e['target']}"
@@ -331,12 +388,17 @@ def render(out_dir, output):
 
     print(f"wrote {output}  ({len(graph['nodes'])} nodes, {len(graph['edges'])} edges)")
     if missing:
-        print(f"unlabelled nodes (showing code instead): {', '.join(missing)}")
+        print(f"unlabelled nodes (showing code instead): {len(missing)}: {short_list(missing)}")
     if unknown:
-        print(f"labels for unknown node ids ignored: {', '.join(unknown)}")
-    for f in graph["functions"]:
-        if not f["title"]:
-            print(f"no plain-English title for function {f['key']}")
+        print(f"labels for unknown node ids ignored: {short_list(unknown)}")
+    untitled = [f["key"] for f in graph["functions"] if not f["title"]]
+    if untitled:
+        print(f"functions with no plain-English title: {short_list(untitled)}")
+
+
+def short_list(items, limit=12):
+    head = ", ".join(items[:limit])
+    return head + (f" … and {len(items) - limit} more" if len(items) > limit else "")
 
 
 # --------------------------------------------------------------------------- CLI
@@ -356,6 +418,8 @@ def main():
     p.add_argument("root")
     p.add_argument("--entry", required=True)
     p.add_argument("--depth", type=int, default=3)
+    p.add_argument("--label-depth", type=int,
+                   help="only list steps for labelling down to this depth; deeper functions get a title only")
     p.add_argument("--out")
     p = sub.add_parser("render")
     p.add_argument("dir")
@@ -366,11 +430,17 @@ def main():
         project = ec.Project(args.root)
         for e in ec.list_entries(project):
             print(f"{e['entry']}  (line {e['line']}: {e['reason']})")
+        errors = project.parse_errors()
+        if errors:
+            print(f"warning: {len(errors)} file(s) could not be parsed, so any entry points in them are missing:")
+            for e in errors:
+                print(f"  {e['file']}: {e['error']}")
         return
     if args.cmd == "extract":
         project = ec.Project(args.root)
         analysis = ec.analyze(project, args.entry, args.depth)
         graph = build_graph(analysis)
+        graph["label_depth"] = args.label_depth
         out_dir = args.out or default_out_dir(args.root, args.entry)
         os.makedirs(out_dir, exist_ok=True)
         with open(os.path.join(out_dir, "graph.json"), "w") as fh:

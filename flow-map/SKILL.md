@@ -23,10 +23,11 @@ python3 <skill>/scripts/flow_map.py entries <repo_root>
 ## 2. Extract
 
 ```bash
-python3 <skill>/scripts/flow_map.py extract <repo_root> --entry <path/to/file.py>:<func_or_Class.method> [--depth N]
+python3 <skill>/scripts/flow_map.py extract <repo_root> --entry <path/to/file.py>:<func_or_Class.method> [--depth N] [--label-depth N]
 ```
 
-`--depth` (default 3) is how many levels of project calls to follow. Library internals are never followed.
+- **`--depth`** (default 3) is how many levels of project calls to follow. Library internals are never followed. Nested functions can be entries too (`outer.inner`).
+- **`--label-depth N`** is for very large maps. It lists only the steps down to depth N for labelling. Deeper functions need a title only, and their steps show their code.
 
 The output is a compact summary, one line per step:
 
@@ -38,8 +39,10 @@ The output is a compact summary, one line per step:
 ```
 
 - **Line format:** `id`, `kind`, `:line`, then the code. `{...}` shows where branches go, and `(calls X)` marks project calls.
-- **Kinds:** `input step call ext unres check loop except error exit`.
-- **`[auto: ...]`** means the step already has a label.
+- **Kinds:** `input step call ext unres check loop except error exit yield`.
+- **`[auto: ...]`** means the step already has a label (logging, print, timers, inputs, fall-through ends).
+- **`[code ok]`** means the code is short and reads fine as it is. Labelling it is optional.
+- **`tests:`** is `direct` (a test calls it, or requests its route), `indirect via X`, `mocked` (tests only patch it out, so its checks never run there) or `none`. Without a coverage file this is a static guess.
 - **Line 1** gives the output directory, which holds `graph.json` and is where `labels.json` goes.
 
 ## 3. Write `labels.json`
@@ -64,7 +67,7 @@ Write `<out_dir>/labels.json`:
 
 ### Labels (`nodes`)
 
-Give one label to every node that has no `[auto]` label.
+Give one label to every listed node that has no `[auto]` or `[code ok]` marker.
 - **Plain English, ≤ 7 words.** Describe the *purpose*, not the syntax: "Read the photo", not "Call cv2.imread".
 - **Use the code's domain words** (faces, invoices, tokens), not generic ones like "process data".
 - **Checks and loops are questions or "For each …"**: "Is the box empty?", "For each face box". Edge labels already say yes/no.
