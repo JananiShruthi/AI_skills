@@ -1,0 +1,8 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "ai-code-maps",
+  "version": "1.0.0",
+  "description": "Source-backed control-flow and database-schema maps for software repositories",
+  "license": "MIT",
+  "repository": "https://github.com/JananiShruthi/AI_skills"
+}

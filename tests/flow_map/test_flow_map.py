@@ -14,7 +14,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE = os.path.join(HERE, "fixture_project")
-SCRIPTS = os.path.join(HERE, "..", "..", "flow-map", "scripts")
+SCRIPTS = os.path.join(HERE, "..", "..", "skills", "flow-map", "scripts")
 sys.path.insert(0, SCRIPTS)
 sys.dont_write_bytecode = True
 

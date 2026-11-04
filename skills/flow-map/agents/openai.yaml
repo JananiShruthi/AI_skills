@@ -1,0 +1,7 @@
+interface:
+  display_name: "Flow Map"
+  short_description: "Map Python control flow for code review"
+  default_prompt: "Use $flow-map to trace a Python entry point and create an interactive control-flow map."
+
+policy:
+  allow_implicit_invocation: true

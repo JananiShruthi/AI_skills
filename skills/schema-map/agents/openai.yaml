@@ -1,0 +1,7 @@
+interface:
+  display_name: "Schema Map"
+  short_description: "Explore schemas and simulate SQL query plans"
+  default_prompt: "Use $schema-map to explore this TiDB or MySQL schema, analyze my query, and preview the results interactively."
+
+policy:
+  allow_implicit_invocation: true

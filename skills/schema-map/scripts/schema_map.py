@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract a TiDB/MySQL schema and render a self-contained HTML onboarding map."""
+"""Extract a TiDB/MySQL schema, analyze queries, preview inline, and export on request."""
 import argparse
 import json
 import re
@@ -7,6 +7,8 @@ import sys
 import tempfile
 from collections import defaultdict, deque
 from pathlib import Path
+
+from query_analysis import analyze_query
 
 IDENT = r"(?:`[^`]+`|[A-Za-z_][\w$]*)"
 QUAL = rf"{IDENT}(?:\s*\.\s*{IDENT})?"
@@ -316,7 +318,7 @@ def md_escape(value):
     return str(value).replace("|","\\|").replace("\n"," ")
 
 
-def schema_markdown(data, html_path):
+def schema_markdown(data, html_path=None):
     lines=["# Schema guide", "", f"Source: `{data['schema']}`. This guide describes the schema defined in that file and the cited repository evidence.", ""]
     if data["warnings"]:
         lines += ["**Schema may be incomplete.** " + " ".join(data["warnings"]), ""]
@@ -342,7 +344,10 @@ def schema_markdown(data, html_path):
             purpose=p["text"] if p else "Confirm with the project owner"
             lines.append(f"| `{n}` | {md_escape(purpose)} |")
         lines.append("")
-    lines += [f"For columns, keys, relationship direction, and source links, open `{html_path}`.", ""]
+    if html_path:
+        lines += [f"For columns, keys, relationship direction, query analysis, and source links, open `{html_path}`.", ""]
+    else:
+        lines += ["Use the interactive schema-map preview for columns, keys, relationships, query analysis, and source links.", ""]
     return "\n".join(lines)
 
 
@@ -378,8 +383,9 @@ def valid_loc(root, loc):
     except (OSError, UnicodeError): return False
 
 
-def render(args):
-    work = Path(args.work).resolve()
+def build_view(work):
+    """Validate annotations and return the complete visualization payload."""
+    work = Path(work).resolve()
     data = json.loads((work/"schema.json").read_text(encoding="utf-8"))
     ann = json.loads((work/"annotations.json").read_text(encoding="utf-8"))
     root = Path(data["repo"]).resolve()
@@ -423,27 +429,88 @@ def render(args):
     data["groups"],data["group_labels"] = groups_for(data["tables"],data["edges"],categories)
     data["purposes"] = ann.get("purposes",{})
     data["pipeline"] = pipeline
-    output = Path(args.output).resolve() if args.output else root/"docs"/"schema_explorer.html"
-    output.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(data,ensure_ascii=False).replace("<","\\u003c").replace(">","\\u003e").replace("&","\\u0026")
+    query_path = work/"query-analysis.json"
+    data["query_analysis"] = json.loads(query_path.read_text(encoding="utf-8")) if query_path.is_file() else None
+    data["work_dir"] = str(work)
+    return data
+
+
+def encoded_payload(data):
+    return json.dumps(data,ensure_ascii=False).replace("<","\\u003c").replace(">","\\u003e").replace("&","\\u0026")
+
+
+def fragment_for(data):
     template = (Path(__file__).resolve().parent.parent/"assets"/"template.html").read_text(encoding="utf-8")
-    output.write_text(template.replace("__SCHEMA_DATA__",payload),encoding="utf-8")
-    md_path=getattr(args,"markdown",None)
-    md_output = Path(md_path).resolve() if md_path else root/"SCHEMA.md"
-    md_output.parent.mkdir(parents=True,exist_ok=True)
-    html_label=output.relative_to(root).as_posix() if output.is_relative_to(root) else str(output)
-    md_output.write_text(schema_markdown(data,html_label),encoding="utf-8")
-    unverified = len(names)-len(data["purposes"])
-    print(f"HTML: {output}\nMarkdown: {md_output}\nTables: {len(names)}; declared relationships: {len(data['edges'])-len(inferred)}; inferred relationships: {len(inferred)}; unverified purposes: {unverified}; warnings: {len(data['warnings'])}")
+    return template.replace("__SCHEMA_DATA__",encoded_payload(data))
+
+
+def report(data):
+    inferred = sum(1 for edge in data["edges"] if edge["kind"] == "inferred")
+    declared = len(data["edges"])-inferred
+    unverified = len(data["tables"])-len(data["purposes"])
+    return f"Tables: {len(data['tables'])}; declared relationships: {declared}; inferred relationships: {inferred}; unverified purposes: {unverified}; warnings: {len(data['warnings'])}"
+
+
+def preview(args):
+    """Write an inline visualization fragment to a host-owned location."""
+    data = build_view(args.work)
+    output = Path(args.output).resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(fragment_for(data),encoding="utf-8")
+    print(f"Preview fragment: {output}\n{report(data)}")
+
+
+def export(args):
+    """Create a standalone HTML file only after the user requests export."""
+    data = build_view(args.work)
+    output = Path(args.output).resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    export_data = {**data, "work_dir": None}
+    fragment = fragment_for(export_data)
+    standalone = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Schema workspace</title></head><body>" + fragment + "</body></html>"
+    output.write_text(standalone,encoding="utf-8")
+    md_output = None
+    if getattr(args,"markdown",None):
+        md_output = Path(args.markdown).resolve()
+        md_output.parent.mkdir(parents=True,exist_ok=True)
+        root = Path(data["repo"]).resolve()
+        html_label=output.relative_to(root).as_posix() if output.is_relative_to(root) else str(output)
+        md_output.write_text(schema_markdown(data,html_label),encoding="utf-8")
+    print(f"Exported HTML: {output}" + (f"\nMarkdown: {md_output}" if md_output else "") + f"\n{report(data)}")
+
+
+def analyze(args):
+    work = Path(args.work).resolve()
+    schema = json.loads((work/"schema.json").read_text(encoding="utf-8"))
+    if args.query_file:
+        query = Path(args.query_file).read_text(encoding="utf-8")
+    else:
+        query = args.query
+    explain_text = Path(args.explain).read_text(encoding="utf-8") if args.explain else None
+    stats = json.loads(Path(args.stats).read_text(encoding="utf-8")) if args.stats else None
+    result = analyze_query(query,schema,stats=stats,explain_text=explain_text)
+    output = work/"query-analysis.json"
+    output.write_text(json.dumps(result,indent=2),encoding="utf-8")
+    latency=result["latency"]
+    print(f"Query analysis: {output}\nEstimated latency: {latency['low_ms']}–{latency['high_ms']} ms ({result['confidence']} confidence)\nAccesses: {len(result['accesses'])}; recommendations: {len(result['recommendations'])}")
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     sub=p.add_subparsers(dest="command",required=True)
     a=sub.add_parser("extract"); a.add_argument("repo"); a.add_argument("schema"); a.add_argument("--out")
-    b=sub.add_parser("render"); b.add_argument("work"); b.add_argument("-o","--output"); b.add_argument("--markdown")
+    b=sub.add_parser("preview",help="write an inline visualization fragment for a supported host")
+    b.add_argument("work"); b.add_argument("-o","--output",required=True)
+    c=sub.add_parser("export",help="write standalone HTML after the user requests a download")
+    c.add_argument("work"); c.add_argument("-o","--output",required=True); c.add_argument("--markdown")
+    d=sub.add_parser("analyze-query",help="analyze SQL and optional EXPLAIN output without executing it")
+    d.add_argument("work")
+    source=d.add_mutually_exclusive_group(required=True); source.add_argument("--query"); source.add_argument("--query-file")
+    d.add_argument("--explain",help="file containing JSON, tabular EXPLAIN, or EXPLAIN ANALYZE output")
+    d.add_argument("--stats",help="optional JSON table cardinalities, selectivities, and throughput assumptions")
     args=p.parse_args()
-    try: extract(args) if args.command=="extract" else render(args)
+    commands={"extract":extract,"preview":preview,"export":export,"analyze-query":analyze}
+    try: commands[args.command](args)
     except (ValueError,OSError,KeyError,json.JSONDecodeError) as exc:
         print(f"ERROR: {exc}",file=sys.stderr); return 1
     return 0

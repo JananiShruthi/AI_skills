@@ -1,0 +1,18 @@
+{
+  "default_rows": 100000,
+  "tables": {
+    "accounts": {"rows": 10000},
+    "users": {"rows": 500000},
+    "emails": {
+      "rows": 100000000,
+      "selectivity": {
+        "user_id": 0.01,
+        "account_id": 0.0001
+      }
+    }
+  },
+  "environment": {
+    "best_rows_per_second": 2000000,
+    "conservative_rows_per_second": 50000
+  }
+}
