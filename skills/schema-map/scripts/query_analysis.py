@@ -313,6 +313,20 @@ def _leading_index(indexes, column):
     return next((idx for idx in indexes if idx["columns"][0] == column), None)
 
 
+def _starting_scan_rows(ref, by_name, table_stats, default_rows, predicates):
+    """Estimate the first access for a candidate inner-join starting table."""
+    table = by_name[ref["table"]]
+    configured = table_stats.get(ref["table"], {})
+    rows = int(max(1, _number(configured.get("rows"), default_rows)))
+    filters = predicates.get(ref["alias"], [])
+    if not _matching_index(_indexes(table), filters):
+        return rows
+    selectivity = 1.0
+    for predicate in filters:
+        selectivity *= _selectivity(predicate, rows, configured=configured.get("selectivity", {}).get(predicate["column"]))
+    return max(1, int(rows * selectivity))
+
+
 def analyze_query(query, schema, stats=None, explain_text=None):
     """Explain access paths and estimate latency without executing the SQL."""
     stats = stats or {}
@@ -338,9 +352,15 @@ def analyze_query(query, schema, stats=None, explain_text=None):
         if operation.get("table"):
             explain_by_table.setdefault(operation["table"], operation)
 
+    refs = parsed["tables"]
+    if (not explain and len(refs) == 2 and parsed["joins"]
+            and not re.search(r"\b(?:LEFT|RIGHT|FULL|STRAIGHT_JOIN)\b", mask_sql(query), re.I)):
+        refs = sorted(refs, key=lambda ref: _starting_scan_rows(
+            ref, by_name, table_stats, stats.get("default_rows", 100_000), parsed["predicates"]
+        ))
     prior_aliases = set()
     prior_output = 1
-    for ref in parsed["tables"]:
+    for ref in refs:
         table_name = ref["table"]
         table = by_name[table_name]
         configured = table_stats.get(table_name, {})
@@ -430,11 +450,14 @@ def analyze_query(query, schema, stats=None, explain_text=None):
         if predicate_columns and (not match or len(match["matched"]) < min(len(candidate), 2)):
             existing = [idx["columns"] for idx in indexes]
             if candidate and not any(cols[:len(candidate)] == candidate for cols in existing):
-                sql = f"CREATE INDEX idx_{table_name}_{'_'.join(candidate)} ON {table_name} ({', '.join(candidate)});"
+                column_types = {col["name"]: col.get("type", "") for col in table["columns"]}
+                prefix_required = [col for col in candidate if re.match(r"^(?:TINYTEXT|TEXT|MEDIUMTEXT|LONGTEXT|TINYBLOB|BLOB|MEDIUMBLOB|LONGBLOB)\b", column_types.get(col, ""), re.I)]
+                sql = None if prefix_required else f"CREATE INDEX idx_{table_name}_{'_'.join(candidate)} ON {table_name} ({', '.join(candidate)});"
                 recommendations.append({
                     "severity": "high" if not match else "medium",
                     "title": f"Review an index for {table_name}",
-                    "detail": "Equality filters lead the candidate index; range filters follow. Confirm selectivity and write cost before applying it.",
+                    "detail": ("TEXT/BLOB columns " + ", ".join(prefix_required) + " need a prefix length before MySQL/TiDB can index them. Choose a length from data distribution and engine limits before writing DDL."
+                               if prefix_required else "Equality filters lead the candidate index; range filters follow. Confirm selectivity and write cost before applying it."),
                     "sql": sql,
                 })
 

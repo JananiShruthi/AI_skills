@@ -48,6 +48,8 @@ python3 <skill>/scripts/schema_map.py preview <work_dir> -o <host_preview_fragme
 
 Display that fragment inline. The preview contains the complete tabbed workspace and its own **Export HTML** button. If the host cannot render interactive fragments, run `export` to a new temporary HTML path and link the file in your response. This gives Claude Code users a usable first result.
 
+Keep preview fragments task-private: they contain local repository and work-directory paths for source links and the in-host export action. Both the CLI export and the page's downloaded HTML remove those paths.
+
 ## Export
 
 The user can click **Export HTML** in the preview. If they instead ask you to save the workspace, run:

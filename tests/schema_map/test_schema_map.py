@@ -96,6 +96,7 @@ CREATE TABLE parents (id INT PRIMARY KEY);
             self.assertIn('role="tablist"', preview_text)
             self.assertIn("Export HTML", preview_text)
             payload = json.loads(re.search(r'<script id="sw-data" type="application/json">(.*?)</script>', preview_text, re.S).group(1))
+            self.assertEqual(payload["work_dir"], str(work.resolve()))
             self.assertEqual(payload["edges"][0]["cardinality"], "N → 1")
             self.assertEqual(payload["edges"][0]["on_delete"], "CASCADE")
             self.assertEqual(payload["group_labels"], ["Core", "Work"])
@@ -106,6 +107,7 @@ CREATE TABLE parents (id INT PRIMARY KEY);
             self.assertTrue(output.read_text().startswith("<!doctype html>"))
             exported_payload = json.loads(re.search(r'<script id="sw-data" type="application/json">(.*?)</script>', output.read_text(), re.S).group(1))
             self.assertIsNone(exported_payload["work_dir"])
+            self.assertNotIn(str(work.resolve()), output.read_text())
             self.assertIn("flowchart LR", markdown.read_text())
 
     def test_query_analysis_flags_scope_and_estimates_bounded_latency(self):
@@ -150,6 +152,33 @@ CREATE TABLE parents (id INT PRIMARY KEY);
         self.assertEqual([p["column"] for p in by_table["policies"]["predicates"]], ["status"])
         self.assertEqual(len(result["joins"]), 1)
         self.assertFalse(any("policy_sk" in item.get("sql", "") for item in result["recommendations"]))
+
+    def test_inner_self_join_starts_from_indexed_filter(self):
+        schema = {"tables": [{
+            "name": "tags",
+            "columns": [{"name": "tag_sk", "type": "BIGINT"}, {"name": "tag_name", "type": "VARCHAR(100)"}],
+            "constraints": [
+                {"kind": "PRIMARY KEY", "columns": ["tag_sk"]},
+                {"kind": "INDEX", "columns": ["tag_name"]},
+            ],
+        }]}
+        query = "SELECT * FROM tags a JOIN tags b ON a.tag_sk=b.tag_sk WHERE b.tag_name='x'"
+        result = sm.analyze_query(query, schema)
+        self.assertEqual([access["alias"] for access in result["accesses"]], ["b", "a"])
+        self.assertEqual(result["accesses"][0]["access"], "index lookup")
+        self.assertEqual(result["accesses"][1]["access"], "join index lookup")
+        outer = sm.analyze_query(query.replace("JOIN", "LEFT JOIN"), schema)
+        self.assertEqual([access["alias"] for access in outer["accesses"]], ["a", "b"])
+
+    def test_text_index_candidate_requires_prefix_review(self):
+        schema = {"tables": [{
+            "name": "tags",
+            "columns": [{"name": "description", "type": "TEXT"}],
+            "constraints": [],
+        }]}
+        result = sm.analyze_query("SELECT * FROM tags WHERE description='x'", schema)
+        self.assertTrue(any("prefix length" in item["detail"] for item in result["recommendations"]))
+        self.assertFalse(any(item.get("sql") for item in result["recommendations"]))
 
     def test_query_parsing_handles_literals_aliases_and_missing_tables(self):
         schema = {"tables": [
