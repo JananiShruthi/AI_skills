@@ -9,7 +9,7 @@ The skills use Python 3.9+ and the standard library. No package installation or 
 | Skill | Use it when | Output |
 | --- | --- | --- |
 | [`flow-map`](skills/flow-map/SKILL.md) | You need to trace one Python function, method, route, or CLI entry point through calls, checks, loops, exceptions, and exits. | An interactive HTML control-flow map with source lines, test reachability, plain-language labels, and review notes. The page loads its pinned diagram libraries from jsDelivr when opened. |
-| [`schema-map`](skills/schema-map/SKILL.md) | You need to explore a TiDB/MySQL schema, understand relationships, explain pasted query plans, or estimate a slow query's cost. | A tabbed inline workspace with schema browsing, query-plan explanation, latency simulation, optimization suggestions, and user-triggered HTML export. |
+| [`schema-map`](skills/schema-map/SKILL.md) | You need to explore a TiDB/MySQL schema, understand relationships, explain pasted query plans, or estimate a slow query's cost. | A tabbed workspace shown inline where supported, or saved as temporary HTML for hosts without an inline viewer. |
 
 Both skills separate deterministic extraction and rendering from the agent's judgment. The scripts build the facts; the agent adds concise, evidence-backed explanations.
 

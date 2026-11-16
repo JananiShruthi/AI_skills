@@ -7,7 +7,7 @@ description: Explore a TiDB or MySQL schema and explain or simulate SQL query pl
 
 Build an interactive schema workspace from repository files. Read SQL and code; never connect to or execute against a database. Python 3.9+ standard library is sufficient. `<skill>` means this skill's directory.
 
-The workspace has four tabs: Overview, Schema, Query plan, and Simulator. Present it in the host's inline interactive surface when available. Initial invocation is preview-only: do not create a standalone HTML deliverable in the user's repository. The workspace's **Export HTML** button downloads a standalone copy; use the CLI `export` command only when the user explicitly asks you to save one. Publish to cloud hosting only after an explicit publish request.
+The workspace has four tabs: Overview, Schema, Query plan, and Simulator. Present it inline when the host supports interactive HTML. Otherwise, export a standalone HTML file to a task-owned temporary directory and give the user its path on the first run. Do not write into the user's repository unless requested. The workspace's **Export HTML** button downloads a standalone copy. Publish to cloud hosting only after an explicit publish request.
 
 ## Extract the schema
 
@@ -46,9 +46,9 @@ Write the preview fragment to the durable, task-owned path required by the host'
 python3 <skill>/scripts/schema_map.py preview <work_dir> -o <host_preview_fragment.html>
 ```
 
-Display that fragment inline. Do not describe it as an exported file or ask the user to open a browser. The preview contains the complete tabbed workspace and its own **Export HTML** button. If the host cannot render interactive fragments, explain that limitation and offer explicit HTML export or cloud publishing instead.
+Display that fragment inline. The preview contains the complete tabbed workspace and its own **Export HTML** button. If the host cannot render interactive fragments, run `export` to a new temporary HTML path and link the file in your response. This gives Claude Code users a usable first result.
 
-## Export only on request
+## Export
 
 The user can click **Export HTML** in the preview. If they instead ask you to save the workspace, run:
 
@@ -56,7 +56,7 @@ The user can click **Export HTML** in the preview. If they instead ask you to sa
 python3 <skill>/scripts/schema_map.py export <work_dir> -o <output.html> [--markdown <SCHEMA.md>] [--force]
 ```
 
-Export refuses to overwrite existing files unless `--force` is supplied; inspect them before replacing. Report the saved path. The exported HTML contains no absolute repository path, is self-contained and has no network dependencies. If the user explicitly asks to publish, use available hosting tooling and report the resulting location; do not publish merely because preview is unavailable.
+Export refuses to overwrite existing files unless `--force` is supplied; inspect them before replacing. Report the saved path. The exported HTML contains no absolute repository path, is self-contained and has no network dependencies. If the user explicitly asks to publish, use available hosting tooling and report the resulting location.
 
 ## Completion
 

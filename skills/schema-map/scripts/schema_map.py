@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract a TiDB/MySQL schema, analyze queries, preview inline, and export on request."""
+"""Extract a TiDB/MySQL schema, analyze queries, preview inline, and export HTML."""
 import argparse
 import html
 import json
@@ -295,7 +295,7 @@ def scan_code(root, schemas, table_names):
     refs = defaultdict(list)
     code_ext={".py", ".sql", ".java", ".js", ".jsx", ".ts", ".tsx", ".go", ".rb", ".php", ".cs", ".kt", ".rs", ".scala"}
     schemas=set(schemas)
-    patterns={table: re.compile(rf"\b(?:FROM|JOIN|INTO|UPDATE|TABLE|REFERENCES)\s+(?:`?[\w$]+`?\s*\.\s*)?`?{re.escape(table)}`?(?![\w$])|(?:__tablename__|\.from|\.table)\s*(?:=|\()\s*['\"`]\s*{re.escape(table)}\s*['\"`]",re.I) for table in table_names}
+    patterns={table: re.compile(rf"\b(?:FROM|JOIN|INTO|UPDATE|TABLE|REFERENCES)\s+(?:(?:`?[\w$]+`?|<[\w$]+>)\s*\.\s*)?`?{re.escape(table)}`?(?![\w$])|(?:__tablename__|\.from|\.table)\s*(?:=|\()\s*['\"`]\s*{re.escape(table)}\s*['\"`]",re.I) for table in table_names}
     for path in root.rglob("*"):
         if any(part in EXCLUDED or part.startswith(".") for part in path.relative_to(root).parts): continue
         if not path.resolve().is_relative_to(root): continue
@@ -458,6 +458,11 @@ def apply_alters(path, relative, tables, edges, warnings):
                 delete=re.search(r"\bON\s+DELETE\s+(CASCADE|SET\s+NULL|RESTRICT|NO\s+ACTION|SET\s+DEFAULT)",clean,re.I)
                 edges.append({"from":table["name"],"to":name(fk.group("target")),"columns":split_names(fk.group("cols")),"target_columns":split_names(fk.group("target_cols")),"kind":"declared","declaration":"FOREIGN KEY","on_delete":delete.group(1).upper() if delete else "","loc":loc})
                 continue
+            index_add=re.match(rf"ADD\s+(?:CONSTRAINT\s+{IDENT}\s+)?(?P<unique>UNIQUE\b\s*)?(?:(?:KEY|INDEX)\b\s*)?(?:{IDENT}\s*)?\(",clean,re.I|re.S)
+            if index_add and re.search(r"\b(?:UNIQUE|KEY|INDEX)\b",clean[:index_add.end()],re.I):
+                cols=key_columns(raw)
+                add_constraint(table["constraints"],"UNIQUE" if index_add.group("unique") else "INDEX",cols,loc,expression="" if cols else raw[raw.find("("):].strip())
+                continue
             add=re.match(rf"ADD\s+(?:COLUMN\s+)?(?P<col>{IDENT})\s+(?P<tail>.+)",raw,re.I|re.S)
             if add and add.group("col").strip("`").upper() not in KEYWORDS:
                 col=name(add.group("col"))
@@ -477,7 +482,7 @@ def apply_alters(path, relative, tables, edges, warnings):
                     found.update(type=column_type(modify.group("tail")),not_null=bool(re.search(r"\bNOT\s+NULL\b",mask_sql(raw),re.I)),default=default_value(raw),loc=loc)
                 else: warnings.append(f"{loc}: MODIFY COLUMN target {table['name']}.{col} not found")
                 continue
-            if re.match(r"(?:SET\s+TIFLASH|ADD\s+(?:VECTOR\s+)?INDEX)\b",clean,re.I): continue
+            if re.match(r"SET\s+TIFLASH\b",clean,re.I): continue
             warnings.append(f"{loc}: unsupported ALTER TABLE operation")
         warnings[:]=[w for w in warnings if not w.startswith(loc+": structural ALTER TABLE")]
     for m in re.finditer(rf"\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?P<table>{QUAL})",masked,re.I):
@@ -593,8 +598,12 @@ def build_view(work):
     data["groups"],data["group_labels"] = groups_for(data["tables"],data["edges"],categories)
     data["purposes"] = ann.get("purposes",{})
     data["pipeline"] = pipeline
-    query_path = work/"query-analysis.json"
-    data["query_analysis"] = json.loads(query_path.read_text(encoding="utf-8")) if query_path.is_file() else None
+    query_paths = [work/"query-analysis.json"] + sorted(
+        (path for path in work.glob("query-analysis-*.json") if re.fullmatch(r"query-analysis-\d+", path.stem)),
+        key=lambda path:int(path.stem.rsplit("-",1)[-1]),
+    )
+    data["query_analyses"] = [json.loads(path.read_text(encoding="utf-8")) for path in query_paths if path.is_file()]
+    data["query_analysis"] = data["query_analyses"][-1] if data["query_analyses"] else None
     data["work_dir"] = str(work)
     return data
 
@@ -661,9 +670,14 @@ def analyze(args):
     stats = json.loads(Path(args.stats).read_text(encoding="utf-8")) if args.stats else None
     result = analyze_query(query,schema,stats=stats,explain_text=explain_text)
     output = work/"query-analysis.json"
+    if output.exists() and not getattr(args,"force",False):
+        suffix=2
+        while (work/f"query-analysis-{suffix}.json").exists(): suffix+=1
+        output=work/f"query-analysis-{suffix}.json"
     output.write_text(json.dumps(result,indent=2),encoding="utf-8")
     latency=result["latency"]
-    print(f"Query analysis: {output}\nEstimated latency: {latency['low_ms']}–{latency['high_ms']} ms ({result['confidence']} confidence)\nAccesses: {len(result['accesses'])}; recommendations: {len(result['recommendations'])}")
+    estimate=f"{latency['low_ms']}–{latency['high_ms']} ms" if latency["low_ms"] is not None else "unavailable (unmatched schema table)"
+    print(f"Query analysis: {output}\nEstimated latency: {estimate} ({result['confidence']} confidence)\nAccesses: {len(result['accesses'])}; recommendations: {len(result['recommendations'])}")
 
 
 def main():
@@ -679,6 +693,7 @@ def main():
     source=d.add_mutually_exclusive_group(required=True); source.add_argument("--query"); source.add_argument("--query-file")
     d.add_argument("--explain",help="file containing JSON, tabular EXPLAIN, or EXPLAIN ANALYZE output")
     d.add_argument("--stats",help="optional JSON table cardinalities, selectivities, and throughput assumptions")
+    d.add_argument("--force",action="store_true",help="replace an existing query analysis in this workspace")
     args=p.parse_args()
     commands={"extract":extract,"preview":preview,"export":export,"analyze-query":analyze}
     try: commands[args.command](args)

@@ -126,6 +126,109 @@ CREATE TABLE parents (id INT PRIMARY KEY);
         emails = next(item for item in result["accesses"] if item["table"] == "emails")
         self.assertEqual(emails["access"], "index lookup")
         self.assertLess(emails["estimated_scan_rows"], emails["table_rows"])
+        users = next(item for item in result["accesses"] if item["table"] == "users")
+        self.assertEqual(users["access"], "join index lookup")
+        self.assertLess(users["estimated_scan_rows"], users["table_rows"])
+
+    def test_join_equalities_are_not_literal_filters(self):
+        schema = {"tables": [
+            {"name": "tags", "columns": [{"name": "policy_sk"}, {"name": "tag_name"}], "constraints": []},
+            {"name": "policies", "columns": [{"name": "policy_sk"}, {"name": "status"}], "constraints": []},
+        ]}
+        join_only = sm.analyze_query(
+            "SELECT * FROM tags t JOIN policies p ON t.policy_sk = p.policy_sk", schema,
+        )
+        self.assertTrue(all(not item["predicates"] for item in join_only["accesses"]))
+        self.assertFalse(any(item.get("sql") for item in join_only["recommendations"]))
+        result = sm.analyze_query(
+            "SELECT * FROM tags t JOIN policies p ON t.policy_sk = p.policy_sk "
+            "WHERE t.tag_name = 'sensitive' AND p.status = 'active'",
+            schema,
+        )
+        by_table = {item["table"]: item for item in result["accesses"]}
+        self.assertEqual([p["column"] for p in by_table["tags"]["predicates"]], ["tag_name"])
+        self.assertEqual([p["column"] for p in by_table["policies"]["predicates"]], ["status"])
+        self.assertEqual(len(result["joins"]), 1)
+        self.assertFalse(any("policy_sk" in item.get("sql", "") for item in result["recommendations"]))
+
+    def test_query_parsing_handles_literals_aliases_and_missing_tables(self):
+        schema = {"tables": [
+            {"name": "tags", "columns": [{"name": "id"}, {"name": "name"}, {"name": "namespace_sk"}], "constraints": [{"kind": "PRIMARY KEY", "columns": ["id"]}]},
+            {"name": "policies", "columns": [{"name": "id"}], "constraints": [{"kind": "PRIMARY KEY", "columns": ["id"]}]},
+        ]}
+        query = "SELECT * FROM <DB_NAME>.tags a, policies b WHERE a.id=b.id AND a.name='id=7' -- a.id=7\n"
+        result = sm.analyze_query(query, schema)
+        self.assertEqual([a["alias"] for a in result["accesses"]], ["a", "b"])
+        self.assertEqual([a["predicates"] for a in result["accesses"]], [[{"column": "name", "operator": "="}], []])
+        self.assertEqual(len(result["joins"]), 1)
+        self.assertTrue(any("namespace_sk" in r["title"] for r in result["recommendations"]))
+        self_join = sm.analyze_query("SELECT * FROM tags a JOIN tags b ON a.id=b.id WHERE b.name='x'", schema)
+        self.assertEqual([a["alias"] for a in self_join["accesses"]], ["a", "b"])
+        self.assertEqual(self_join["accesses"][0]["predicates"], [])
+        self.assertEqual(self_join["accesses"][1]["predicates"], [{"column": "name", "operator": "="}])
+        missing = sm.analyze_query("SELECT * FROM missing m JOIN tags t ON m.id=t.id", schema)
+        self.assertIsNone(missing["latency"]["low_ms"])
+        self.assertTrue(any("missing" in a for a in missing["assumptions"]))
+        self.assertEqual(sm.analyze_query("DELETE FROM tags WHERE id=7", schema)["accesses"][0]["estimated_scan_rows"], 1)
+        updated = sm.analyze_query("UPDATE tags SET name='x' WHERE id=7", schema)
+        self.assertEqual(updated["accesses"][0]["predicates"], [{"column": "id", "operator": "="}])
+        hinted = sm.analyze_query("SELECT * FROM tags USE INDEX (idx) WHERE id=7", schema)
+        self.assertEqual(hinted["accesses"][0]["alias"], "tags")
+        limited = sm.analyze_query("SELECT * FROM tags ORDER BY id LIMIT 1", schema)
+        self.assertEqual(limited["accesses"][0]["access"], "ordered index scan")
+        self.assertEqual(limited["accesses"][0]["estimated_scan_rows"], 1)
+        unique_schema = {"tables": [{"name": "tags", "columns": [{"name": "name"}, {"name": "namespace_sk"}],
+                                    "constraints": [{"kind": "UNIQUE", "columns": ["name", "namespace_sk"]}]}]}
+        unique = sm.analyze_query("SELECT * FROM tags WHERE name='x' AND namespace_sk=1", unique_schema,
+                                  stats={"tables": {"tags": {"rows": 10_000_000}}})
+        self.assertEqual(unique["accesses"][0]["estimated_scan_rows"], 1)
+        prefix = sm.analyze_query("SELECT * FROM tags WHERE name='x'", unique_schema)
+        self.assertFalse(any(r.get("sql") for r in prefix["recommendations"]))
+
+    def test_tidb_explain_rows_and_observed_timing(self):
+        schema = {"tables": [{"name": "tags", "columns": [{"name": "id"}], "constraints": []}]}
+        explain = """| id | estRows | actRows | task | access object | execution info | operator info |
+| TableReader_7 | 100.00 | 90 | root | | time:152.3ms, loops:1 | data:TableFullScan_5 |
+| └─TableFullScan_5 | 1000.00 | 1000 | cop[tikv] | table:tags | tikv_task:{time:140ms} | keep order:false |"""
+        result = sm.analyze_query("SELECT * FROM tags", schema, explain_text=explain)
+        self.assertEqual(result["confidence"], "high")
+        self.assertEqual(len(result["plan"]), 2)
+        self.assertEqual(result["accesses"][0]["estimated_scan_rows"], 1000)
+        self.assertEqual(result["latency"], {"low_ms": 137.07, "high_ms": 167.53})
+
+    def test_alter_indexes_and_templated_code_references(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            schema = root / "schema.sql"
+            schema.write_text("""CREATE TABLE tags (id INT, name VARCHAR(64));
+ALTER TABLE tags ADD INDEX idx_name (name);
+ALTER TABLE tags ADD UNIQUE KEY uq_name (name);
+ALTER TABLE tags ADD CONSTRAINT uq_id UNIQUE (id);
+""")
+            tables, edges, warnings = sm.parse_schema(schema)
+            sm.apply_alters(schema, "schema.sql", tables, edges, warnings)
+            self.assertEqual([(c["kind"], c["columns"]) for c in tables[0]["constraints"]],
+                             [("INDEX", ["name"]), ("UNIQUE", ["name"]), ("UNIQUE", ["id"])])
+            self.assertEqual(warnings, [])
+            (root / "app.sql").write_text("SELECT * FROM <DB_NAME>.tags WHERE id=1;")
+            self.assertEqual(sm.scan_code(root, {schema}, {"tags"})["tags"], ["app.sql:1"])
+            result = sm.analyze_query("SELECT * FROM tags WHERE name='x'", {"tables": tables})
+            self.assertFalse(any(r.get("sql") for r in result["recommendations"]))
+
+    def test_analyze_keeps_query_history_without_force(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            (work / "schema.json").write_text(json.dumps({"tables": [{"name": "tags", "columns": [{"name": "id"}], "constraints": []}]}))
+            args = type("Args", (), {"work": str(work), "query": "SELECT * FROM tags", "query_file": None, "explain": None, "stats": None})
+            sm.analyze(args)
+            original = (work / "query-analysis.json").read_text()
+            args.query = "SELECT id FROM tags WHERE id=2"
+            sm.analyze(args)
+            self.assertEqual((work / "query-analysis.json").read_text(), original)
+            self.assertTrue((work / "query-analysis-2.json").is_file())
+            args.force = True
+            sm.analyze(args)
+            self.assertNotEqual((work / "query-analysis.json").read_text(), original)
 
     def test_explain_analyze_uses_observed_time(self):
         schema = {"tables": [{"name": "emails", "columns": [{"name": "user_id"}], "constraints": [{"kind": "INDEX", "columns": ["user_id"]}]}]}
