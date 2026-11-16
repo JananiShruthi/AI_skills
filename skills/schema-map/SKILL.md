@@ -12,10 +12,10 @@ The workspace has four tabs: Overview, Schema, Query plan, and Simulator. Presen
 ## Extract the schema
 
 ```bash
-python3 <skill>/scripts/schema_map.py extract <repo_root> <schema.sql> [--out <work_dir>]
+python3 <skill>/scripts/schema_map.py extract <repo_root> <schema.sql|migrations_dir> [more.sql ...] [--out <work_dir>] [--force]
 ```
 
-This writes `schema.json` and `annotations.json` in a temporary work directory and prints a compact table summary. Never load all of `schema.json` into context. Review prefilled annotations, inspect only cited repository lines, and edit `annotations.json`:
+Pass migration files in application order, or a directory whose SQL files sort in migration order. This writes `schema.json` and `annotations.json` in a temporary work directory, refuses to replace an existing extraction without `--force`, and prints a compact table summary. Missing FK targets and unsupported migration operations become visible warnings. Never load all of `schema.json` into context. Review prefilled annotations, inspect only cited repository lines, and edit `annotations.json`:
 
 ```json
 {
@@ -53,10 +53,10 @@ Display that fragment inline. Do not describe it as an exported file or ask the 
 The user can click **Export HTML** in the preview. If they instead ask you to save the workspace, run:
 
 ```bash
-python3 <skill>/scripts/schema_map.py export <work_dir> -o <output.html> [--markdown <SCHEMA.md>]
+python3 <skill>/scripts/schema_map.py export <work_dir> -o <output.html> [--markdown <SCHEMA.md>] [--force]
 ```
 
-Report the saved path. The exported HTML is self-contained and has no network dependencies. If the user explicitly asks to publish, use available hosting tooling and report the resulting location; do not publish merely because preview is unavailable.
+Export refuses to overwrite existing files unless `--force` is supplied; inspect them before replacing. Report the saved path. The exported HTML contains no absolute repository path, is self-contained and has no network dependencies. If the user explicitly asks to publish, use available hosting tooling and report the resulting location; do not publish merely because preview is unavailable.
 
 ## Completion
 

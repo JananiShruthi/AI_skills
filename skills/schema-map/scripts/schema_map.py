@@ -1,26 +1,31 @@
 #!/usr/bin/env python3
 """Extract a TiDB/MySQL schema, analyze queries, preview inline, and export on request."""
 import argparse
+import html
 import json
 import re
 import sys
 import tempfile
+import os
 from collections import defaultdict, deque
 from pathlib import Path
 
 from query_analysis import analyze_query
 
 IDENT = r"(?:`[^`]+`|[A-Za-z_][\w$]*)"
-QUAL = rf"{IDENT}(?:\s*\.\s*{IDENT})?"
+SCHEMA_IDENT = rf"(?:{IDENT}|<[A-Za-z_][\w$]*>)"
+QUAL = rf"{SCHEMA_IDENT}(?:\s*\.\s*{IDENT})?"
 CREATE = re.compile(rf"\bCREATE\s+(?:TEMPORARY\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?P<name>{QUAL})\s*\(", re.I)
 FK = re.compile(rf"\bFOREIGN\s+KEY\s*\((?P<cols>[^)]*)\)\s*REFERENCES\s+(?P<target>{QUAL})\s*\((?P<target_cols>[^)]*)\)", re.I | re.S)
 INLINE_REF = re.compile(rf"\bREFERENCES\s+(?P<target>{QUAL})\s*\((?P<target_cols>[^)]*)\)", re.I | re.S)
 KEYWORDS = {"PRIMARY", "FOREIGN", "UNIQUE", "KEY", "INDEX", "CONSTRAINT", "CHECK", "FULLTEXT", "VECTOR", "SPATIAL"}
-EXCLUDED = {".git", ".venv", "venv", "node_modules", "__pycache__", "dist", "build", "site-packages"}
+EXCLUDED = {".git", ".venv", "venv", "node_modules", "__pycache__", "dist", "build", "site-packages", "tests", "test", "specs"}
+SQL_TYPES = {"INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT", "DECIMAL", "NUMERIC", "FLOAT", "DOUBLE", "VARCHAR", "CHAR", "TEXT", "LONGTEXT", "JSON", "DATE", "DATETIME", "TIMESTAMP", "BOOL", "BOOLEAN", "ENUM", "BLOB", "VARBINARY", "VECTOR"}
 
 
 def name(value):
-    return value.split(".")[-1].strip().strip("`").lower()
+    parts = re.findall(IDENT, value)
+    return parts[-1].strip("`").lower() if parts else value.strip().lower()
 
 
 def line_at(text, offset):
@@ -36,6 +41,10 @@ def mask_sql(text):
         c = text[i]
         nxt = text[i:i+2]
         if state == "code":
+            if c == "`":
+                state = "identifier"
+                i += 1
+                continue
             if nxt in ("--", "/*") or c == "#":
                 state = "block" if nxt == "/*" else "line"
                 step = 2 if nxt != "#" else 1
@@ -60,6 +69,13 @@ def mask_sql(text):
             else:
                 if c != "\n": out[i] = " "
                 i += 1
+        elif state == "identifier":
+            if c == "`":
+                if i+1 < len(text) and text[i+1] == "`": i += 2
+                else:
+                    state = "code"
+                    i += 1
+            else: i += 1
         else:
             if c == "\\" and i+1 < len(text):
                 out[i:i+2] = [" ", " "]
@@ -79,23 +95,45 @@ def mask_sql(text):
 
 def matching_paren(masked, opening):
     depth = 0
-    for i in range(opening, len(masked)):
+    quoted = False
+    i = opening
+    while i < len(masked):
+        if masked[i] == "`":
+            if quoted and i+1 < len(masked) and masked[i+1] == "`": i += 2; continue
+            quoted = not quoted
+            i += 1
+            continue
+        if quoted:
+            i += 1
+            continue
         if masked[i] == "(": depth += 1
         elif masked[i] == ")":
             depth -= 1
             if depth == 0: return i
+        i += 1
     return None
 
 
 def segments(masked, start, end):
     depth = 0
     item_start = start
-    for i in range(start, end):
+    quoted = False
+    i = start
+    while i < end:
+        if masked[i] == "`":
+            if quoted and i+1 < end and masked[i+1] == "`": i += 2; continue
+            quoted = not quoted
+            i += 1
+            continue
+        if quoted:
+            i += 1
+            continue
         if masked[i] == "(": depth += 1
         elif masked[i] == ")": depth -= 1
         elif masked[i] == "," and depth == 0:
             yield item_start, i
             item_start = i+1
+        i += 1
     yield item_start, end
 
 
@@ -127,8 +165,28 @@ def column_type(raw_tail):
 
 
 def key_columns(raw):
-    m = re.search(r"\(([^()]*)\)", raw)
-    return split_names(m.group(1)) if m else []
+    masked = mask_sql(raw)
+    opening = masked.find("(")
+    if opening < 0: return []
+    close = matching_paren(masked, opening)
+    if close is None: return []
+    result = []
+    for a,b in segments(masked, opening+1, close):
+        item = masked[a:b].strip()
+        m = re.match(IDENT, item)
+        if m: result.append(name(m.group()))
+    return result
+
+
+def is_constraint(clean):
+    if clean.startswith("`"): return False
+    first_two = re.match(rf"({IDENT})\s+([A-Za-z_][\w]*)", clean)
+    if first_two and first_two.group(2).upper() in SQL_TYPES: return False
+    if re.match(r"CONSTRAINT\s+", clean, re.I): return True
+    if re.match(r"(?:PRIMARY|FOREIGN)\s+KEY\b", clean, re.I): return True
+    if re.match(r"(?:UNIQUE\s+)?(?:KEY|INDEX|VECTOR\s+INDEX)\s+(?:"+IDENT+r"\s*)?\(", clean, re.I): return True
+    if re.match(r"UNIQUE\s*\(", clean, re.I): return True
+    return bool(re.match(r"(?:CHECK|FULLTEXT|SPATIAL)\s*\(", clean, re.I))
 
 
 def default_value(raw):
@@ -136,11 +194,12 @@ def default_value(raw):
     return m.group(1) if m else ""
 
 
-def add_constraint(constraints, kind, cols, loc):
-    if cols: constraints.append({"kind":kind,"columns":cols,"loc":loc})
+def add_constraint(constraints, kind, cols, loc, expression=""):
+    if cols or expression: constraints.append({"kind":kind,"columns":cols,"loc":loc,"expression":expression})
 
 
-def parse_schema(path):
+def parse_schema(path, relative_path=None):
+    source = relative_path or path.name
     text = path.read_text(encoding="utf-8")
     masked = mask_sql(text)
     lines = text.splitlines()
@@ -153,7 +212,7 @@ def parse_schema(path):
         start_line = line_at(text, m.start())
         matched_starts.add(m.start())
         if close is None:
-            warnings.append(f"{path.name}:{start_line}: unclosed CREATE TABLE {table_name}")
+            warnings.append(f"{source}:{start_line}: unclosed CREATE TABLE {table_name}")
             continue
         cols = []
         constraints = []
@@ -164,11 +223,11 @@ def parse_schema(path):
             if not clean: continue
             first = re.match(rf"({IDENT})", clean)
             if not first:
-                warnings.append(f"{path.name}:{line_at(text,a)}: unparsed table item in {table_name}")
+                warnings.append(f"{source}:{line_at(text,a)}: unparsed table item in {table_name}")
                 continue
             word = first.group(1).strip("`")
-            loc = f"{path.name}:{line_at(text,a+len(text[a:b])-len(text[a:b].lstrip()))}"
-            if word.upper() not in KEYWORDS:
+            loc = f"{source}:{line_at(text,a+len(text[a:b])-len(text[a:b].lstrip()))}"
+            if not is_constraint(clean):
                 col = word.lower()
                 tail = raw[first.end():]
                 cols.append({"name": col, "type": column_type(tail), "not_null":bool(re.search(r"\bNOT\s+NULL\b",clean,re.I)), "default":default_value(raw), "loc": loc})
@@ -186,27 +245,32 @@ def parse_schema(path):
                 if re.search(r"\bPRIMARY\s+KEY\b",clean,re.I): add_constraint(constraints,"PRIMARY KEY",key_columns(clean),loc)
                 elif re.search(r"\bUNIQUE\b",clean,re.I): add_constraint(constraints,"UNIQUE",key_columns(clean),loc)
                 elif re.search(r"\b(?:VECTOR\s+INDEX|INDEX|KEY)\b",clean,re.I) and not ref:
-                    add_constraint(constraints,"INDEX",key_columns(clean),loc)
+                    index_cols=key_columns(clean)
+                    add_constraint(constraints,"INDEX",index_cols,loc,expression="" if index_cols else raw[raw.find("("):].strip())
+                elif not ref:
+                    warnings.append(f"{loc}: unsupported table constraint in {table_name}")
         references = len(re.findall(r"\bREFERENCES\b",masked[opening+1:close],re.I))
         if len(edges)-edges_before != references:
-            warnings.append(f"{path.name}:{start_line}: some REFERENCES in {table_name} were not parsed")
-        tables.append({"name":table_name,"loc":f"{path.name}:{start_line}","comment":preceding_comment(lines,start_line),"columns":cols,"constraints":constraints})
+            warnings.append(f"{source}:{start_line}: some REFERENCES in {table_name} were not parsed")
+        tables.append({"name":table_name,"loc":f"{source}:{start_line}","comment":preceding_comment(lines,start_line),"columns":cols,"constraints":constraints})
     by_table={t["name"]:t for t in tables}
     for m in re.finditer(rf"\bCREATE\s+(?P<unique>UNIQUE\s+)?(?:VECTOR\s+)?INDEX\s+{IDENT}\s+ON\s+(?P<table>{QUAL})\s*\(",masked,re.I):
         target=name(m.group("table"))
         close=matching_paren(masked,m.end()-1)
         if target in by_table and close is not None:
-            add_constraint(by_table[target]["constraints"],"UNIQUE" if m.group("unique") else "INDEX",key_columns(masked[m.end()-1:close+1]),f"{path.name}:{line_at(text,m.start())}")
+            part=text[m.end()-1:close+1]
+            cols=key_columns(part)
+            add_constraint(by_table[target]["constraints"],"UNIQUE" if m.group("unique") else "INDEX",cols,f"{source}:{line_at(text,m.start())}",expression="" if cols else part)
     # Warn on CREATE TABLE tokens that could not match the supported header.
     for m in re.finditer(r"\bCREATE\s+(?:TEMPORARY\s+)?TABLE\b", masked, re.I):
         if m.start() not in matched_starts:
-            warnings.append(f"{path.name}:{line_at(text,m.start())}: unsupported CREATE TABLE syntax")
+            warnings.append(f"{source}:{line_at(text,m.start())}: unsupported CREATE TABLE syntax")
     for m in re.finditer(r"\bALTER\s+TABLE\b[^;]*", masked, re.I | re.S):
         statement=m.group()
         if re.search(r"\bFOREIGN\s+KEY\b|\b(?:ADD|DROP|MODIFY|CHANGE|RENAME)\s+(?:COLUMN\s+)?(?!INDEX\b|KEY\b|VECTOR\b)",statement,re.I):
-            warnings.append(f"{path.name}:{line_at(text,m.start())}: structural ALTER TABLE is not parsed")
+            warnings.append(f"{source}:{line_at(text,m.start())}: structural ALTER TABLE is not parsed")
     for m in re.finditer(r"\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:VIEW|TRIGGER|PROCEDURE|FUNCTION)\b",masked,re.I):
-        warnings.append(f"{path.name}:{line_at(text,m.start())}: database object outside table parser")
+        warnings.append(f"{source}:{line_at(text,m.start())}: database object outside table parser")
     seen = set()
     for t in tables:
         if t["name"] in seen: warnings.append(f"{t['loc']}: duplicate table name {t['name']}")
@@ -214,29 +278,37 @@ def parse_schema(path):
         if not t["columns"]: warnings.append(f"{t['loc']}: no columns parsed for {t['name']}")
     for edge in edges:
         if edge["to"] not in seen: warnings.append(f"{edge['loc']}: foreign key target {edge['to']} is outside parsed schema")
+        source_table = by_table.get(edge["from"])
+        if source_table:
+            columns = {c["name"] for c in source_table["columns"]}
+            for column in edge["columns"]:
+                if column not in columns:
+                    warnings.append(f"{edge['loc']}: foreign key column {edge['from']}.{column} is not declared")
     return tables, edges, warnings
 
 
 def split_names(value):
-    return [name(x.strip()) for x in value.split(",") if x.strip()]
+    return [name(value[a:b].strip()) for a,b in segments(mask_sql(value),0,len(value)) if value[a:b].strip()]
 
 
-def scan_code(root, schema, table_names):
+def scan_code(root, schemas, table_names):
     refs = defaultdict(list)
+    code_ext={".py", ".sql", ".java", ".js", ".jsx", ".ts", ".tsx", ".go", ".rb", ".php", ".cs", ".kt", ".rs", ".scala"}
+    schemas=set(schemas)
+    patterns={table: re.compile(rf"\b(?:FROM|JOIN|INTO|UPDATE|TABLE|REFERENCES)\s+(?:`?[\w$]+`?\s*\.\s*)?`?{re.escape(table)}`?(?![\w$])|(?:__tablename__|\.from|\.table)\s*(?:=|\()\s*['\"`]\s*{re.escape(table)}\s*['\"`]",re.I) for table in table_names}
     for path in root.rglob("*"):
         if any(part in EXCLUDED or part.startswith(".") for part in path.relative_to(root).parts): continue
         if not path.resolve().is_relative_to(root): continue
-        if not path.is_file() or path == schema or path.suffix.lower() not in {".py", ".sql", ".md"}: continue
+        if not path.is_file() or path in schemas or path.suffix.lower() not in code_ext|{".md"}: continue
         try:
             if path.stat().st_size > 500_000: continue
             content = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError): continue
         rel = path.relative_to(root).as_posix()
         for i, line in enumerate(content.splitlines(), 1):
-            low = line.lower()
-            for table in table_names:
-                if re.search(rf"(?<![\w]){re.escape(table)}(?![\w])", low):
-                    refs[table].append((0 if rel.startswith("application/") else 1 if rel.startswith("docs/") else 2 if not rel.startswith("tests/") else 3, f"{rel}:{i}"))
+            for table,pattern in patterns.items():
+                if pattern.search(line):
+                    refs[table].append((0 if path.suffix.lower() in code_ext else 1, f"{rel}:{i}"))
     return {table:[loc for _,loc in sorted(hits)[:4]] for table,hits in refs.items()}
 
 
@@ -315,54 +387,143 @@ def add_cardinality(data):
 
 
 def md_escape(value):
-    return str(value).replace("|","\\|").replace("\n"," ")
+    value = html.escape(str(value).replace("\n", " "), quote=False)
+    return re.sub(r"([\\`*_[\]{}()!|])", r"\\\1", value)
 
 
 def schema_markdown(data, html_path=None):
-    lines=["# Schema guide", "", f"Source: `{data['schema']}`. This guide describes the schema defined in that file and the cited repository evidence.", ""]
+    lines=["# Schema guide", "", f"Source: `{md_escape(data['schema'])}`. This guide describes the schema defined in that file and the cited repository evidence.", ""]
     if data["warnings"]:
-        lines += ["**Schema may be incomplete.** " + " ".join(data["warnings"]), ""]
+        lines += ["**Schema may be incomplete.** " + " ".join(md_escape(w) for w in data["warnings"]), ""]
     lines += ["## How data moves", ""]
     pipeline=data.get("pipeline",[])
     if pipeline:
         lines += ["```mermaid", "flowchart LR"]
         for i,step in enumerate(pipeline):
-            label=step["title"].replace('"',"'")
+            label=re.sub(r"[^\w .-]", "", step["title"])
             lines.append(f'  s{i}["{i+1}. {label}"]')
             if i: lines.append(f"  s{i-1} --> s{i}")
         lines += ["```", ""]
         for i,step in enumerate(pipeline,1):
-            lines += [f"{i}. **{step['title']}** — {step['summary']} Tables: "+", ".join(f"`{n}`" for n in step["tables"])+". Evidence: "+", ".join(f"`{loc}`" for loc in step["evidence"])+"."]
+            lines += [f"{i}. **{md_escape(step['title'])}** — {md_escape(step['summary'])} Tables: "+", ".join(f"`{md_escape(n)}`" for n in step["tables"])+". Evidence: "+", ".join(f"`{md_escape(loc)}`" for loc in step["evidence"])+"."]
         lines.append("")
     else:
         lines += ["The data pipeline has not been verified from repository evidence. Confirm it with the project owner.", ""]
     lines += ["## Table areas", ""]
     for label,group in zip(data["group_labels"],data["groups"]):
-        lines += [f"### {label}", "", "| Table | Purpose |", "| --- | --- |"]
+        lines += [f"### {md_escape(label)}", "", "| Table | Purpose |", "| --- | --- |"]
         for n in group:
             p=data["purposes"].get(n)
             purpose=p["text"] if p else "Confirm with the project owner"
-            lines.append(f"| `{n}` | {md_escape(purpose)} |")
+            lines.append(f"| `{md_escape(n)}` | {md_escape(purpose)} |")
         lines.append("")
     if html_path:
-        lines += [f"For columns, keys, relationship direction, query analysis, and source links, open `{html_path}`.", ""]
+        lines += [f"For columns, keys, relationship direction, query analysis, and source links, open `{md_escape(html_path)}`.", ""]
     else:
         lines += ["Use the interactive schema-map preview for columns, keys, relationships, query analysis, and source links.", ""]
     return "\n".join(lines)
 
 
+def schema_inputs(root, inputs):
+    paths=[]
+    for item in inputs:
+        path=Path(item).resolve()
+        if not path.is_relative_to(root): raise ValueError("schema input must be inside repo_root")
+        if path.is_dir(): paths.extend(sorted(p for p in path.rglob("*") if p.is_file() and p.suffix.lower()==".sql"))
+        elif path.is_file(): paths.append(path)
+        else: raise ValueError(f"schema input does not exist: {item}")
+    paths=list(dict.fromkeys(paths))
+    if not paths: raise ValueError("no SQL schema files found")
+    return paths
+
+
+def apply_alters(path, relative, tables, edges, warnings):
+    text=path.read_text(encoding="utf-8")
+    masked=mask_sql(text)
+    by_table={t["name"]:t for t in tables}
+    for m in re.finditer(rf"\bALTER\s+TABLE\s+(?P<table>{QUAL})\s+(?P<body>[^;]*);?",masked,re.I|re.S):
+        table=by_table.get(name(m.group("table")))
+        loc=f"{relative}:{line_at(text,m.start())}"
+        if not table:
+            warnings.append(f"{loc}: ALTER TABLE target {name(m.group('table'))} not found")
+            continue
+        body_start=m.start("body")
+        body_end=m.end("body")
+        for a,b in segments(masked,body_start,body_end):
+            clean=masked[a:b].strip()
+            raw=text[a:b].strip()
+            if not clean: continue
+            fk=FK.search(clean)
+            if fk and re.match(r"ADD\b",clean,re.I):
+                delete=re.search(r"\bON\s+DELETE\s+(CASCADE|SET\s+NULL|RESTRICT|NO\s+ACTION|SET\s+DEFAULT)",clean,re.I)
+                edges.append({"from":table["name"],"to":name(fk.group("target")),"columns":split_names(fk.group("cols")),"target_columns":split_names(fk.group("target_cols")),"kind":"declared","declaration":"FOREIGN KEY","on_delete":delete.group(1).upper() if delete else "","loc":loc})
+                continue
+            add=re.match(rf"ADD\s+(?:COLUMN\s+)?(?P<col>{IDENT})\s+(?P<tail>.+)",raw,re.I|re.S)
+            if add and add.group("col").strip("`").upper() not in KEYWORDS:
+                col=name(add.group("col"))
+                if col in {c["name"] for c in table["columns"]}: warnings.append(f"{loc}: duplicate added column {table['name']}.{col}")
+                else: table["columns"].append({"name":col,"type":column_type(add.group("tail")),"not_null":bool(re.search(r"\bNOT\s+NULL\b",mask_sql(raw),re.I)),"default":default_value(raw),"loc":loc})
+                continue
+            drop=re.match(rf"DROP\s+COLUMN\s+({IDENT})\b",clean,re.I)
+            if drop:
+                col=name(drop.group(1));table["columns"]=[c for c in table["columns"] if c["name"]!=col]
+                table["constraints"]=[k for k in table["constraints"] if col not in k["columns"]]
+                edges[:]=[e for e in edges if e["from"]!=table["name"] or col not in e["columns"]]
+                continue
+            modify=re.match(rf"MODIFY\s+(?:COLUMN\s+)?(?P<col>{IDENT})\s+(?P<tail>.+)",raw,re.I|re.S)
+            if modify:
+                col=name(modify.group("col"));found=next((c for c in table["columns"] if c["name"]==col),None)
+                if found:
+                    found.update(type=column_type(modify.group("tail")),not_null=bool(re.search(r"\bNOT\s+NULL\b",mask_sql(raw),re.I)),default=default_value(raw),loc=loc)
+                else: warnings.append(f"{loc}: MODIFY COLUMN target {table['name']}.{col} not found")
+                continue
+            if re.match(r"(?:SET\s+TIFLASH|ADD\s+(?:VECTOR\s+)?INDEX)\b",clean,re.I): continue
+            warnings.append(f"{loc}: unsupported ALTER TABLE operation")
+        warnings[:]=[w for w in warnings if not w.startswith(loc+": structural ALTER TABLE")]
+    for m in re.finditer(rf"\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?P<table>{QUAL})",masked,re.I):
+        target=name(m.group("table"))
+        tables[:]=[t for t in tables if t["name"]!=target]
+        edges[:]=[e for e in edges if e["from"]!=target and e["to"]!=target]
+    for m in re.finditer(rf"\bCREATE\s+(?P<unique>UNIQUE\s+)?INDEX\s+{IDENT}\s+ON\s+(?P<table>{QUAL})\s*\(",masked,re.I):
+        target=name(m.group("table"));table=next((t for t in tables if t["name"]==target),None)
+        close=matching_paren(masked,m.end()-1)
+        if table and close is not None:
+            loc=f"{relative}:{line_at(text,m.start())}"
+            kind="UNIQUE" if m.group("unique") else "INDEX"
+            part=text[m.end()-1:close+1]
+            cols=key_columns(part)
+            if not any(k["kind"]==kind and k["columns"]==cols and k["loc"]==loc for k in table["constraints"]):
+                add_constraint(table["constraints"],kind,cols,loc,expression="" if cols else part)
+
+
 def extract(args):
     root = Path(args.repo).resolve()
-    schema = Path(args.schema).resolve()
-    if not root.is_dir() or not schema.is_file() or not schema.is_relative_to(root):
-        raise ValueError("schema must be a file inside repo_root")
-    tables, edges, warnings = parse_schema(schema)
+    if not root.is_dir(): raise ValueError("repo_root must be a directory")
+    schemas=schema_inputs(root,args.schema if isinstance(args.schema,list) else [args.schema])
+    tables,edges,warnings=[],[],[]
+    for schema in schemas:
+        rel=schema.relative_to(root).as_posix()
+        new_tables,new_edges,new_warnings=parse_schema(schema,rel)
+        tables.extend(new_tables);edges.extend(new_edges)
+        warnings.extend(w for w in new_warnings if "foreign key target " not in w and "foreign key column " not in w and "structural ALTER TABLE is not parsed" not in w)
+        apply_alters(schema,rel,tables,edges,warnings)
+    names={t["name"] for t in tables}
+    by_name={t["name"]:t for t in tables}
+    for edge in edges:
+        if edge["to"] not in names: warnings.append(f"{edge['loc']}: foreign key target {edge['to']} is outside parsed schema")
+        source=by_name.get(edge["from"])
+        if source:
+            columns={c["name"] for c in source["columns"]}
+            for column in edge["columns"]:
+                if column not in columns: warnings.append(f"{edge['loc']}: foreign key column {edge['from']}.{column} is not declared")
+    if len(names)!=len(tables): warnings.append("duplicate table definitions across schema files")
     if not tables: raise ValueError("no CREATE TABLE statements parsed")
     work = Path(args.out).resolve() if args.out else Path(tempfile.mkdtemp(prefix="schema-map-"))
+    if any((work/file).exists() for file in ("schema.json","annotations.json")) and not getattr(args,"force",False):
+        raise ValueError(f"refusing to overwrite existing extraction in {work}; pass --force to replace")
     work.mkdir(parents=True, exist_ok=True)
-    table_names={t['name'] for t in tables}
-    purposes,categories=documented_purposes(root,table_names)
-    data = {"repo":str(root),"schema":schema.relative_to(root).as_posix(),"tables":tables,"edges":edges,"warnings":warnings,"references":scan_code(root,schema,table_names),"categories":categories}
+    purposes,categories=documented_purposes(root,names)
+    data = {"repo":str(root),"schema":", ".join(p.relative_to(root).as_posix() for p in schemas),"schemas":[p.relative_to(root).as_posix() for p in schemas],"tables":tables,"edges":edges,"warnings":warnings,"references":scan_code(root,schemas,names),"categories":categories}
     (work/"schema.json").write_text(json.dumps(data,indent=2),encoding="utf-8")
     (work/"annotations.json").write_text(json.dumps({"purposes":purposes,"categories":{},"inferred_edges":[]},indent=2),encoding="utf-8")
     print(f"Work directory: {work}\nTables: {len(tables)}; declared relationships: {len(edges)}; documented purposes: {len(purposes)}; warnings: {len(warnings)}")
@@ -419,11 +580,14 @@ def build_view(work):
         if any(t not in names for t in step["tables"]): errors.append(f"pipeline step {i+1} has an unknown table")
         if any(not valid_loc(root,loc) for loc in step["evidence"]): errors.append(f"pipeline step {i+1} has invalid evidence")
         if len(step["title"])>80 or len(step["summary"])>240: errors.append(f"pipeline step {i+1} is too long")
+    resolved_edges=[]
     for edge in data["edges"]:
         if edge["from"] not in names or edge["to"] not in names:
-            errors.append(f"relationship target missing: {edge['from']} → {edge['to']}")
+            warning=f"{edge['loc']}: foreign key target {edge['to']} is outside parsed schema"
+            if warning not in data["warnings"]: data["warnings"].append(warning)
+        else: resolved_edges.append(edge)
     if errors: raise ValueError("\n".join(errors))
-    data["edges"] += inferred
+    data["edges"] = resolved_edges + inferred
     add_cardinality(data)
     categories={**data.get("categories",{}),**ann.get("categories",{})}
     data["groups"],data["group_labels"] = groups_for(data["tables"],data["edges"],categories)
@@ -463,18 +627,25 @@ def preview(args):
 def export(args):
     """Create a standalone HTML file only after the user requests export."""
     data = build_view(args.work)
+    root = Path(data["repo"]).resolve()
     output = Path(args.output).resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    export_data = {**data, "work_dir": None}
+    md_path = getattr(args,"markdown",None)
+    md_output = Path(md_path).resolve() if md_path else None
+    if md_output == output: raise ValueError("HTML and Markdown outputs must have different paths")
+    existing=[str(path) for path in (output,md_output) if path and path.exists()]
+    if existing and not getattr(args,"force",False):
+        raise ValueError("refusing to overwrite existing output: "+", ".join(existing)+"; pass --force to replace")
+    export_data = {k:v for k,v in data.items() if k not in ("repo","work_dir")}
+    export_data["work_dir"] = None
+    export_data["source_base"] = os.path.relpath(root,output.parent) if output.is_relative_to(root) else None
     fragment = fragment_for(export_data)
     standalone = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Schema workspace</title></head><body>" + fragment + "</body></html>"
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(standalone,encoding="utf-8")
-    md_output = None
-    if getattr(args,"markdown",None):
-        md_output = Path(args.markdown).resolve()
+    if md_output:
         md_output.parent.mkdir(parents=True,exist_ok=True)
-        root = Path(data["repo"]).resolve()
-        html_label=output.relative_to(root).as_posix() if output.is_relative_to(root) else str(output)
+        relative_html=os.path.relpath(output,md_output.parent)
+        html_label=relative_html if not relative_html.startswith("..") else output.name
         md_output.write_text(schema_markdown(data,html_label),encoding="utf-8")
     print(f"Exported HTML: {output}" + (f"\nMarkdown: {md_output}" if md_output else "") + f"\n{report(data)}")
 
@@ -498,11 +669,11 @@ def analyze(args):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     sub=p.add_subparsers(dest="command",required=True)
-    a=sub.add_parser("extract"); a.add_argument("repo"); a.add_argument("schema"); a.add_argument("--out")
+    a=sub.add_parser("extract"); a.add_argument("repo"); a.add_argument("schema",nargs="+",help="SQL files or migration directories in order"); a.add_argument("--out"); a.add_argument("--force",action="store_true")
     b=sub.add_parser("preview",help="write an inline visualization fragment for a supported host")
     b.add_argument("work"); b.add_argument("-o","--output",required=True)
     c=sub.add_parser("export",help="write standalone HTML after the user requests a download")
-    c.add_argument("work"); c.add_argument("-o","--output",required=True); c.add_argument("--markdown")
+    c.add_argument("work"); c.add_argument("-o","--output",required=True); c.add_argument("--markdown"); c.add_argument("--force",action="store_true")
     d=sub.add_parser("analyze-query",help="analyze SQL and optional EXPLAIN output without executing it")
     d.add_argument("work")
     source=d.add_mutually_exclusive_group(required=True); source.add_argument("--query"); source.add_argument("--query-file")
