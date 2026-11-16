@@ -95,6 +95,66 @@ CREATE TABLE parents (id INT PRIMARY KEY);
             self.assertEqual(payload["group_labels"], ["Core", "Work"])
             self.assertIn("flowchart LR", markdown.read_text())
 
+    def test_keyword_columns_qualified_fk_and_index_prefix(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            path = root / "db" / "schema.sql"
+            path.parent.mkdir()
+            path.write_text("""CREATE TABLE `users` (`id` BIGINT PRIMARY KEY, `key` VARCHAR(64), `index` INT, KEY idx_prefix (`key`(10), `index`), INDEX idx_lower ((lower(`key`))));
+CREATE TABLE orders (id INT PRIMARY KEY, user_id BIGINT, FOREIGN KEY (user_id) REFERENCES public.users(id), FOREIGN KEY (warehouse_id) REFERENCES inventory.warehouses(id));
+""")
+            tables, edges, warnings = sm.parse_schema(path, "db/schema.sql")
+            self.assertEqual([c["name"] for c in tables[0]["columns"]], ["id", "key", "index"])
+            self.assertEqual(tables[0]["constraints"][-2]["columns"], ["key", "index"])
+            self.assertEqual(tables[0]["constraints"][-1]["columns"], [])
+            self.assertIn("lower",tables[0]["constraints"][-1]["expression"])
+            self.assertEqual(edges[0]["to"], "users")
+            self.assertEqual(edges[1]["to"], "warehouses")
+            self.assertEqual(tables[0]["loc"], "db/schema.sql:1")
+            self.assertTrue(any("warehouse_id is not declared" in w for w in warnings))
+
+    def test_migrations_and_safe_render(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "001.sql").write_text("CREATE TABLE parents (id INT PRIMARY KEY);\nCREATE TABLE children (id INT PRIMARY KEY);\n")
+            (root / "002.sql").write_text("ALTER TABLE children ADD COLUMN parent_id INT;\nALTER TABLE children ADD CONSTRAINT fk FOREIGN KEY (parent_id) REFERENCES parents(id);\n")
+            work = root / "work"
+            sm.extract(type("Args", (), {"repo":str(root),"schema":[str(root / "001.sql"),str(root / "002.sql")],"out":str(work)}))
+            ann = json.loads((work / "annotations.json").read_text())
+            ann["purposes"]["children"]={"text":"[click](javascript:alert(1)) <img onerror=alert(2)>","evidence":["001.sql:2"]}
+            (work / "annotations.json").write_text(json.dumps(ann))
+            html_path=root / "docs" / "schema_explorer.html"
+            md_path=root / "SCHEMA.md"
+            html_path.parent.mkdir()
+            html_path.write_text("hand-written HTML")
+            md_path.write_text("hand-written Markdown")
+            args=type("Args", (), {"work":str(work),"output":str(html_path),"markdown":str(md_path)})
+            with self.assertRaisesRegex(ValueError,"refusing to overwrite"):
+                sm.render(args)
+            self.assertEqual(html_path.read_text(),"hand-written HTML")
+            self.assertEqual(md_path.read_text(),"hand-written Markdown")
+            args.force=True
+            sm.render(args)
+            page=html_path.read_text()
+            self.assertNotIn(str(root),page)
+            self.assertIn('"source_base": ".."',page)
+            data=json.loads(re.search(r'<script id="data" type="application/json">(.*?)</script>',page,re.S).group(1))
+            self.assertEqual(len(data["edges"]),1)
+            self.assertIn("parent_id",[c["name"] for c in data["tables"][1]["columns"]])
+            guide=md_path.read_text()
+            self.assertNotIn("<img",guide)
+            self.assertIn("\\[click\\]",guide)
+
+    def test_code_references_include_java_sql_and_skip_bare_mentions(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            (root / "schema.sql").write_text("CREATE TABLE users (id INT);")
+            (root / "Repo.java").write_text('String query = "SELECT * FROM users";\n')
+            (root / "notes.py").write_text("# users are important\n")
+            (root / "query.ts").write_text("db.from('users')\n")
+            refs=sm.scan_code(root,{root / "schema.sql"},{"users"})
+            self.assertEqual(set(refs["users"]),{"Repo.java:1","query.ts:1"})
+
 
 if __name__ == "__main__":
     unittest.main()
